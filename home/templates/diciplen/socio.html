@@ -1,0 +1,67 @@
+{% extends 'home/base.html' %}
+{% load static %}
+{% block title %}Sociology{% endblock title %}
+{% block content %}
+
+ 
+<h1>Sociology</h1>
+
+<br>
+</br>
+
+    
+    
+     
+    <div class = "container">
+      <div class="container marketing">
+    
+        <!-- Three columns of text below the carousel -->
+        <div class="row">
+          <div class="col-lg-4">
+            <img src="{% static 'dp.images/ste.jpg' %}" class="img-fluid rounded-start bd-placeholder-img rounded-circle" alt="Profile Image" width= 75% height= 75%>
+            <h2 class="fw-normal">Criminology </h2>
+            <p>This Book includes the complete course of Criminology with deatile acording to the course contents. </p>
+            <p><a class="btn btn-secondary" href="{% url 'criminology' %}">Go To Course &raquo;</a></p>
+          </div><!-- /.col-lg-4 -->
+          <div class="col-lg-4">
+            <img src="{% static 'dp.images/mass.jpg' %}" class="img-fluid rounded-start bd-placeholder-img rounded-circle" alt="Profile Image" width= 61% height= 61%>
+            <h2 class="fw-normal">Mass Communication</h2>
+            <p>This Book includes the complete course of Mass Communication acording to the course contents.</p>
+            <p><a class="btn btn-secondary" href="{% url 'masscomm' %}">Go To Course &raquo;</a></p>
+          </div><!-- /.col-lg-4 -->
+          <div class="col-lg-4">
+            <img src="{% static 'dp.images/dt.jpg' %}" class="img-fluid rounded-start bd-placeholder-img rounded-circle" alt="Profile Image" width= 75% height= 75%>
+            <h2 class="fw-normal">Media Sciencies</h2>
+            <p>This Book includes the complete course of Media Sciencies acording to the course contents.</p>
+            <p><a class="btn btn-secondary" href="{% url 'mediasci' %}">Go To Course &raquo;</a></p>
+          </div><!-- /.col-lg-4 -->
+        </div><!-- /.row -->
+    </div>
+
+    <br>
+    <br>
+    <div class = "container">
+        <div class="container marketing">
+    
+            <!-- Three columns of text below the carousel -->
+            <div class="row">
+              <div class="col-lg-4">
+                <img src="{% static 'dp.images/socio.png' %}" class="img-fluid rounded-start bd-placeholder-img rounded-circle" alt="Profile Image" width= 80% height= 80%>
+                <h2 class="fw-normal">Sociology</h2>
+                <p>This Book includes the complete course of Sociology acording to the course contents.</p>
+                <p><a class="btn btn-secondary" href="sociology">Go To Course &raquo;</a></p>
+              </div><!-- /.col-lg-4 -->
+             
+              
+            </div>
+            </div>
+<br>
+<br>
+<br>
+
+
+
+
+
+
+{% endblock content %}

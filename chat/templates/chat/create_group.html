@@ -1,0 +1,13 @@
+<!DOCTYPE html>
+<html>
+<head><title>Create Group</title>
+<style>body{font-family:Arial;padding:20px} input{padding:10px;width:300px} button{padding:10px 20px;background:#25D366;color:white;border:none;border-radius:8px}</style>
+</head>
+<body>
+<h2>Create New Group</h2>
+<form method="POST">{% csrf_token %}
+<input type="text" name="name" placeholder="Group Name - e.g. BSCS Section A" required>
+<button type="submit">Create Group</button>
+</form>
+<br><a href="{% url 'group_list' %}">Back</a>
+</body></html>

@@ -1,0 +1,165 @@
+{% extends 'home/base.html' %}
+
+{% block title %}Prediction{% endblock title %}
+{% block content %}
+
+
+
+<style>
+    body{
+        background-repeat: no-repeat;
+        background-attachment: auto;
+        background-size: cover;
+        background-image: url(/static/images/3rd.jpg);
+        
+    }
+    h2{
+        color: white;
+        font-family: arial, sans-serif;
+        font-size: 2.5vw;
+        font-weight: bold;
+        position: absolute;
+
+    }
+    .main{
+        position:absolute;
+        top: 100px;
+        bottom: auto;
+        left: 55vw;
+        width: 40vw;
+        background-color:rgba(0,0,0,0.5);
+        border-radius: 10px;
+        align-items: center;
+        padding: 3%;
+        box-shadow: 2px, 2px, 20px, #919191;
+        background-transparent
+    }
+
+    #h1{
+        font-size: 30px;
+        font-weight: 600;
+        color: #fff;
+    }
+    
+    input[type=submit]{
+        margin-top: 35px;
+        font-size: inherit;
+        border-radius: 10px;
+        color: white;
+        
+        background-color: #5f6162;
+        width: 150px;
+        padding: 10px;
+        outline: none;
+        cursor: pointer;
+    }
+   #right{
+    color: #fff;
+        text-align: left;
+        font-size: 20px;
+        font-weight: 200;
+        width: 300px;
+        background-color: transparent;
+        outline: none; 
+    
+   }
+   #repo-btn{
+        text-decoration: none;
+        display: flex;
+        position: absolute; 
+        bottom : 16%;
+        font-size: inherit;
+        border-radius: 10px;
+        color: white;
+        left: 66%;
+        background-color: #5f6162;
+        width: 150px;
+        padding: 13px;
+        cursor: pointer;
+        outline: none;
+        box-shadow: #5f6162;
+
+
+    }
+     
+    
+   #tab{
+   
+    text-align: left;
+    font-size: 20px;
+    font-weight: 200;
+    border: 1px solid #fff;
+    width: 300px;
+    background-color: transparent; 
+    border-radius: 10px;
+    outline: none; 
+    color: #fff;
+
+   } 
+    #result{
+    color:#fff;
+}
+
+
+</style>
+<h2 align="center">Welcome to the Prediction Page</h2>
+<div align="center" class="main">
+    <h1 id="h1">
+        Please Enter some information about your health:
+    </h1>
+<br>
+    
+    <!-- <form method="post"> -->
+    {% if submitted %}
+     Your Resport Was Saved! You can Check.... 
+    {% else %}
+    <form action="result" method="get">  
+    {% csrf_token %}    
+      
+        <table id="a">
+            <tr>
+                <td align="right" id="right">Pregnancies:</td>
+                <td align="left" ><input type="text" required name="n1" id='tab'></td>
+            </tr>
+             <tr>
+                <td align="right" id= "right">Glucose:</td>
+                <td align="left" ><input type="text" required name="n2" id='tab'></td>
+            </tr>
+             <tr>
+                <td align="right" id= "right">Blood Pressure:</td>
+                <td align="left" ><input type="text" rquired name="n3" id='tab'></td>
+            </tr>
+            <tr>
+                <td align="right" id= "right">Skin Thickness:</td>
+                <td align="left"><input type="text" required name="n4" id='tab'></td>
+            </tr>
+            <tr>
+                <td align="right" id= "right">Insulin:</td>
+                <td align="left"><input type="text" required name="n5" id='tab'></td>
+            </tr>
+            <tr>
+                <td align="right" id="right">BMI:</td>
+                <td align="left"><input type="text" required name="n6" id='tab'></td>
+            </tr>
+            <tr>
+                <td align="right" id= "right">Diabetes Pedigree Function:</td>
+                <td align="left"><input type="text" required name="n7" id='tab'></td>
+            </tr>
+            <tr>
+                <td align="right" id= "right">Age:</td>
+                <td align="left"><input type="text" reuired name="n8" id='tab'></td>
+            </tr>
+
+        </table>
+        <input type="submit">
+      </form>
+    </form>
+    <br>
+    <p name=result id="result">Result: {{result2}} 
+    </p>
+    
+</div>
+</form>
+{% endif %}
+
+{% endblock content %}

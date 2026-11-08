@@ -1,0 +1,51 @@
+{% extends 'home/base.html' %}
+{% load static %}
+{% block title %}Users{% endblock title %}
+{% block content %}
+
+<h2>Users...
+</h2>
+
+
+<br>
+
+
+{% if profiles %}
+{% for profile in profiles %}
+
+
+<br>
+
+<br>
+<div class="card mb-3" style="max-width: 540px;">
+    <div class="row g-0">
+      <div class="col-md-4">
+        {% if profile.profile_image %}
+        <img src="{{ profile.profile_image.url }}" width="200" class="img-fluid rounded-start" alt=" {{ profile.user.username }} ">
+        {% else %}
+        <img src="{% static 'images/3rd.jpg' %}" class="img-fluid rounded-start" alt="Profile Image">
+        {% endif %}
+
+      
+      </div>
+      <div class="col-md-8">
+        <div class="card-body">
+          <h5 class="card-title">{{ profile.user.username }}</h5>
+          <p class="card-text"> <a href=" {% url 'profile' profile.user.id %} ">@{{ profile.user.username|lower }}</a></p>
+          <p class="card-text"><small class="text-body-secondary">Last Updated: {{ profile.date_modified }}</small></p>
+        </div>
+      </div>
+    </div>
+  </div>
+  <br> 
+  
+
+
+
+
+
+
+{% endfor %}
+{% endif %}
+
+{% endblock content %}

@@ -1,0 +1,61 @@
+{% extends 'home/base.html' %}
+
+{% block title %} Events {% endblock title %}
+
+{% block content %}
+{% if user.is_authenticated %}
+<div>
+ <h1> Events </h1> 
+ {% for event in event_list  %}
+ <div class="card">
+  <div class="card-header">
+    <strong> {{ event.name }}  </strong>
+  </div>
+  <div class="card-body">
+    <h5 class="card-title"> <b> Venue:</b> {{ event.venue }}</h5>
+    <p class="card-text">
+      <li class="card-text"><b> Date:</b> {{ event.event_date }} </li>
+      <li class="card-text"><b> Venue Website:</b> {{ event.venue.web }} </li>
+      <li class="card-text"><b> Manager:</b> {{ event.manager }} </li>
+      <li class="card-text"><b> Description:</b> {{ event.description }} </li>
+      <li class="card-text"><b>Confirmed Attendees:</b> </li>
+      {% for user in  event.attendees.all %}
+     
+        {{ user }}, 
+        
+      {% endfor %}
+    </div>
+    {% if event.venue_image %}
+<img src= "{{ event.venue_image.url }}" width =300 >
+{% endif %}  
+  </div>
+</ul> 
+ 
+
+   {% endfor %} 
+   <br>
+
+
+    </p>
+    
+  </div>
+</div>
+<ul>
+   <div class="card">
+     <h5 class="card-header"> </h5> 
+       <div class="card-body">
+         
+ {% else %}
+ <br>
+       <br>
+ <h1>Sorry! You Must Be Logged In To View Campus Events......!     
+ </h1>
+ <br>
+ <br>
+ <a class= "btn btn-secondary" href=" {% url 'login' %} ">Login Here</a>
+</div>
+{% endif %}  
+<br>
+
+{% endblock content %}
+

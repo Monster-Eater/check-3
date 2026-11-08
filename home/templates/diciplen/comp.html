@@ -1,0 +1,72 @@
+{% extends 'home/base.html' %}
+{% load static %}
+{% block title %}Computer Sciencies{% endblock title %}
+{% block content %}
+
+ 
+<h1>Computer Sciencies</h1>
+
+<br>
+</br>
+
+    
+    
+     
+    <div class = "container">
+      <div class="container marketing">
+    
+        <!-- Three columns of text below the carousel -->
+        <div class="row">
+          <div class="col-lg-4">
+            <img src="{% static 'dp.images/ste.jpg' %}" class="img-fluid rounded-start bd-placeholder-img rounded-circle" alt="Profile Image" width= 70% height= 70%>
+            <h2 class="fw-normal">Software Engineering </h2>
+            <p>This Book includes the complete course of Software Engineering acording to the course contents.  </p>
+            <p><a class="btn btn-secondary" href="{% url 'softeng' %}">Go To course &raquo;</a></p>
+          </div><!-- /.col-lg-4 -->
+          <div class="col-lg-4">
+            <img src="{% static 'dp.images/it.jpg' %}" class="img-fluid rounded-start bd-placeholder-img rounded-circle" alt="Profile Image" width= 67% height= 67%>
+            <h2 class="fw-normal">Information Technology</h2>
+            <p>This Book includes the complete course of Information Technology acording to the course contents.</p>
+            <p><a class="btn btn-secondary" href="{% url 'infotech' %}">Go To Course &raquo;</a></p>
+          </div><!-- /.col-lg-4 -->
+          <div class="col-lg-4">
+            <img src="{% static 'dp.images/dt.jpg' %}" class="img-fluid rounded-start bd-placeholder-img rounded-circle" alt="Profile Image" width= 75% height= 75%>
+            <h2 class="fw-normal">Data Sciencies</h2>
+            <p>This Book includes the complete course of Data Science & Sciencies acording to the course contents.</p>
+            <p><a class="btn btn-secondary" href="{% url 'datascience' %}">Go To Course &raquo;</a></p>
+          </div><!-- /.col-lg-4 -->
+        </div><!-- /.row -->
+    </div>
+
+    <br>
+    <br>
+    <div class = "container">
+        <div class="container marketing">
+    
+            <!-- Three columns of text below the carousel -->
+            <div class="row">
+              <div class="col-lg-4">
+                <img src="{% static 'dp.images/cs.avif' %}" class="img-fluid rounded-start bd-placeholder-img rounded-circle" alt="Profile Image" width= 80% height= 80%>
+                <h2 class="fw-normal">Cyber Security</h2>
+                <p>This Book includes the complete course of Syber Security acording to the course contents.</p>
+                <p><a class="btn btn-secondary" href="{% url 'cybersec' %}">Go To Course &raquo;</a></p>
+              </div><!-- /.col-lg-4 -->
+              <div class="col-lg-4">
+                <img src="{% static 'dp.images/compsc.jpg' %}" class="img-fluid rounded-start bd-placeholder-img rounded-circle" alt="Profile Image" width= 65% height= 65%>
+                <h2 class="fw-normal">Computer Sciencies</h2>
+                <p>This Book includes the complete course of Computer Sciencies acording to the course contents.</p>
+                <p><a class="btn btn-secondary" href="{% url 'computersci' %}">Go To Course &raquo;</a></p>
+              </div>
+              
+            </div>
+            </div>
+<br>
+<br>
+<br>
+
+
+
+
+
+
+{% endblock content %}

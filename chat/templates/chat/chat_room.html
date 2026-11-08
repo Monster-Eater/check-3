@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>Chat - {{ other_user.username }}</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+body { font-family: Arial, sans-serif; background: #e8eeeb; margin: 0; padding: 0; }
+.header { background: #075e54; color: white; padding: 14px max(15px, calc((100vw - 920px)/2)); font-size: 17px; font-weight: bold; position: sticky; top: 0; z-index: 10; box-shadow: 0 2px 5px #0002; }
+.header a { color: white; text-decoration: none; margin-right: 10px; }
+.chat-box { max-width: 920px; min-height: calc(100vh - 58px); margin: auto; padding: 16px 18px 90px; display: flex; flex-direction: column; background-color: #e8eeeb; background-image: radial-gradient(#ffffff75 1px, transparent 1px); background-size: 22px 22px; }
+.msg { max-width: min(74%, 560px); padding: 9px 12px; margin: 6px 0; border-radius: 12px; font-size: 14px; line-height: 1.5; word-wrap: break-word; box-shadow: 0 1px 1px #0001; }
+.me { background: #dcf8c6; align-self: flex-end; }
+.other { background: white; align-self: flex-start; }
+.msg small { font-size: 11px; color: #555; display: block; margin-bottom: 2px; }
+.msg img.pic { width: 220px; max-width: 100%; border-radius: 8px 8px 0 0; margin-top: 5px; display: block; }
+.time { font-size: 10px; color: gray; margin-top: 3px; text-align: right; }
+.send-box { position: fixed; bottom: 0; left: 0; right: 0; background: #f0f2f0; padding: 10px max(10px, calc((100vw - 920px)/2)); display: flex; gap: 8px; align-items: center; border-top: 1px solid #dce2df; }
+.send-box input[type="text"] { flex: 1; padding: 9px 12px; border-radius: 20px; border: 1px solid #ccc; outline: none; font-size: 14px; }
+.send-box button { background: #075e54; color: white; border: none; padding: 9px 16px; border-radius: 20px; cursor: pointer; }
+.file-btn { font-size: 22px; cursor: pointer; }
+.file-card { background: #fff; border-radius: 8px; padding: 8px 10px; margin-top: 6px; display: flex; align-items: center; gap: 10px; }
+.file-icon { width: 38px; height: 38px; border-radius: 6px; color: white; font-weight: bold; font-size: 14px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.file-info { flex: 1; min-width: 0; }
+.file-name { font-size: 12.5px; font-weight: 600; color: #111; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.file-actions { margin-top: 4px; display: flex; gap: 12px; }
+.file-actions a { text-decoration: none; font-size: 14px; color: #075e54; }
+.pic-actions { background: #fff; width: 220px; max-width: 100%; border-radius: 0 0 8px 8px; padding: 6px 10px; display: flex; gap: 15px; box-sizing: border-box; }
+.pic-actions a { text-decoration: none; font-size: 13px; color: #075e54; font-weight: 600; }
+.header .presence { display:block; margin:3px 0 0 31px; font-size:11px; font-weight:400; opacity:.85; }
+.receipt { color:#667781; font-size:11px; margin-left:5px; }
+@media(max-width:600px){.msg{max-width:86%}.chat-box{padding-left:11px;padding-right:11px}}
+</style>
+</head>
+<body>
+
+<div class="header"><a href="{% url 'chat_list' %}">←</a> {{ other_user.username }}<span class="presence" id="presence-status" aria-live="polite">Checking status…</span></div>
+
+<div class="chat-box" id="chat-box">
+{% for message in messages %}
+<div class="msg {% if message.sender == request.user %}me{% else %}other{% endif %}" data-id="{{ message.id }}">
+<small>{% if message.sender == request.user %}You{% else %}{{ message.sender.username }}{% endif %}</small>
+{{ message.message }}
+{% if message.attachment %}
+<div class="attach" data-url="{{ message.attachment.url }}" data-name="{{ message.attachment.name }}"></div>
+{% endif %}
+<div class="time">{{ message.timestamp|date:"h:i A" }}{% if message.sender == request.user %}<span class="receipt" data-receipt="{{ message.id }}">{% if message.read_at %}✓✓{% else %}✓{% endif %}</span>{% endif %}</div>
+</div>
+{% endfor %}
+</div>
+
+<form class="send-box" id="send-form" method="POST" enctype="multipart/form-data">
+{% csrf_token %}
+<label class="file-btn" for="file-input">📎</label>
+<input type="file" name="attachment" id="file-input" style="display:none">
+<input type="text" name="message" id="msg-input" placeholder="Type a message..." autocomplete="off">
+<button type="submit">Send</button>
+</form>
+
+<script>
+var chatBox = document.getElementById('chat-box');
+var currentUser = "{{ request.user.username }}";
+var sendForm = document.getElementById('send-form');
+var msgInput = document.getElementById('msg-input');
+var fileInput = document.getElementById('file-input');
+var presenceStatus = document.getElementById('presence-status');
+var typingTimer;
+
+window.scrollTo(0, document.body.scrollHeight);
+
+function getCookie(name) {
+  var v = document.cookie.match('(^|;)\\s*' + name + '\\s*=\\s*([^;]+)');
+  return v ? v.pop() : '';
+}
+
+function renderAttach(el) {
+  var url = el.getAttribute('data-url');
+  if (!url || el.getAttribute('data-done') === '1') return;
+  el.setAttribute('data-done', '1');
+  var name = el.getAttribute('data-name') || url.split('/').pop();
+  var shortName = name.split('/').pop();
+  var lower = url.toLowerCase();
+  if (lower.endsWith('.jpg') || lower.endsWith('.jpeg') || lower.endsWith('.png') || lower.endsWith('.gif') || lower.endsWith('.webp')) {
+    el.innerHTML = '<a href="' + url + '" target="_blank"><img class="pic" src="' + url + '"></a>'
+      + '<div class="pic-actions"><a href="' + url + '" target="_blank">👁️ View</a><a href="' + url + '" download>⬇️ Download</a></div>';
+    return;
+  }
+  var iconText = 'FILE'; var iconColor = '#666';
+  if (lower.endsWith('.doc') || lower.endsWith('.docx')) { iconText = 'W'; iconColor = '#2b579a'; }
+  else if (lower.endsWith('.ppt') || lower.endsWith('.pptx')) { iconText = 'P'; iconColor = '#d24726'; }
+  else if (lower.endsWith('.xls') || lower.endsWith('.xlsx') || lower.endsWith('.csv')) { iconText = 'X'; iconColor = '#217346'; }
+  else if (lower.endsWith('.pdf')) { iconText = 'PDF'; iconColor = '#e53935'; }
+  else if (lower.endsWith('.zip') || lower.endsWith('.rar')) { iconText = 'ZIP'; iconColor = '#7b1fa2'; }
+  else if (lower.endsWith('.txt')) { iconText = 'TXT'; iconColor = '#555'; }
+  el.innerHTML = '<div class="file-card">'
+    + '<div class="file-icon" style="background:' + iconColor + '">' + iconText + '</div>'
+    + '<div class="file-info"><div class="file-name">' + shortName + '</div>'
+    + '<div class="file-actions"><a href="' + url + '" target="_blank">👁️ View</a><a href="' + url + '" download>⬇️ Download</a></div></div>'
+    + '</div>';
+}
+document.querySelectorAll('.attach').forEach(renderAttach);
+
+function buildMsg(m) {
+  var div = document.createElement('div');
+  div.className = 'msg ' + ((m.sender === currentUser) ? 'me' : 'other');
+  div.setAttribute('data-id', m.id);
+  var safeMessage = (m.message || '').replace(/[&<>"']/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; });
+  var safeSender = (m.sender || '').replace(/[&<>"']/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; });
+  var html = '<small>' + ((m.sender === currentUser) ? 'You' : safeSender) + '</small>' + safeMessage;
+  var att = m.attachment_url || m.attachment || '';
+  if (att) html += '<div class="attach" data-url="' + att + '" data-name="' + att.split('/').pop() + '"></div>';
+  html += '<div class="time">' + (m.timestamp || '') + (m.is_me ? '<span class="receipt" data-receipt="' + m.id + '">✓</span>' : '') + '</div>';
+  div.innerHTML = html;
+  var a = div.querySelector('.attach');
+  if (a) renderAttach(a);
+  return div;
+}
+
+// GROUP CHAT WALA TAREEQA - sirf naya msg add hoga, purana dobara nahi banega
+function checkNew() {
+  fetch("{% url 'get_messages' other_user.username %}")
+  .then(r => r.json())
+  .then(data => {
+    var list = data.messages || data;
+    if (presenceStatus) presenceStatus.textContent = data.typing ? 'typing…' : (data.online ? 'online' : (data.last_seen ? 'last seen ' + data.last_seen : 'offline'));
+    if (!list || !list.length) return;
+    var atBottom = (window.innerHeight + window.scrollY) >= (document.body.scrollHeight - 150);
+    list.forEach(function(m){
+      if (!m.id) return;
+      if (document.querySelector('[data-id="' + m.id + '"]')) {
+        var receipt = document.querySelector('[data-receipt="' + m.id + '"]');
+        if (receipt && m.is_read) receipt.textContent = '✓✓';
+        return;
+      }
+      chatBox.appendChild(buildMsg(m));
+    });
+    if (atBottom) window.scrollTo(0, document.body.scrollHeight);
+  }).catch(()=>{});
+}
+setInterval(checkNew, 2000);
+
+function sendTyping(isTyping) {
+  var fd = new FormData(); fd.append('typing', isTyping ? '1' : '0');
+  fetch("{% url 'chat_presence' other_user.username %}", {method:'POST', body:fd, headers:{'X-CSRFToken':getCookie('csrftoken'), 'X-Requested-With':'XMLHttpRequest'}}).catch(()=>{});
+}
+msgInput.addEventListener('input', function(){
+  sendTyping(true); clearTimeout(typingTimer); typingTimer = setTimeout(function(){ sendTyping(false); }, 1800);
+});
+msgInput.addEventListener('blur', function(){ clearTimeout(typingTimer); sendTyping(false); });
+
+sendForm.addEventListener('submit', function(e){
+  e.preventDefault();
+  if (!msgInput.value.trim() && !fileInput.files.length) return;
+  var fd = new FormData(sendForm);
+  fetch(window.location.href, { method: 'POST', body: fd, headers: { 'X-Requested-With': 'XMLHttpRequest', 'X-CSRFToken': getCookie('csrftoken') } })
+  .then(() => {
+    msgInput.value = '';
+    fileInput.value = '';
+    sendTyping(false);
+    checkNew();
+    window.scrollTo(0, document.body.scrollHeight);
+  });
+});
+</script>
+
+</body>
+</html>

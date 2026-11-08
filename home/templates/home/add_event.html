@@ -1,0 +1,23 @@
+{% extends 'home/base.html' %}
+
+{% block content %}
+<div class= "shadow p-4 mb-5 bg-body rounded">
+  <h1> If a story is in you, it has to come out...! </h1>
+<br>
+<br>
+{% if submitted %}
+     Your Event was Submitted Successfully!!!
+{% else %}   
+<form action=""  method=POST enctype = "multipart/form-data">
+{% csrf_token %}
+
+{{ form.as_p }}
+
+<input type="submit" value="submit" class= 'btn-btn-secondary'>
+
+</form>
+
+{% endif %}
+
+</div>
+{% endblock content %}

@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>{{ group.name }}</title>
+<style>
+body{font-family:Arial;background:#e5ddd5;margin:0;font-size:12px}
+.header{background:#075e54;color:white;padding:8px 12px;font-size:15px}
+#box{padding:10px;padding-bottom:70px;display:flex;flex-direction:column}
+.msg{background:white;padding:6px 8px;border-radius:8px;margin-bottom:5px;max-width:320px;font-size:12px;line-height:1.3;align-self:flex-start;word-wrap:break-word}
+.mine{background:#dcf8c6;align-self:flex-end}
+.msg b{font-size:11px}
+.msg img{max-width:160px;border-radius:6px;margin-top:4px;display:block}
+.file-box{background:#fff;padding:6px 8px;border-radius:7px;margin-top:4px;display:flex;align-items:center;gap:8px;max-width:290px}
+.file-logo{width:36px;height:42px;border-radius:4px;color:white;display:flex;align-items:center;justify-content:center;font-weight:bold;font-size:10px;flex-shrink:0;text-align:center;line-height:1.1}
+.logo-pdf{background:#E53935}
+.logo-doc{background:#2B579A}
+.logo-xls{background:#217346}
+.logo-ppt{background:#D24726}
+.logo-zip{background:#7B7B7B}
+.logo-photo{background:#FF9800}
+.logo-video{background:#9C27B0}
+.logo-audio{background:#009688}
+.logo-file{background:#607D8B}
+.file-name{font-size:11px;font-weight:bold;color:#333;word-break:break-word}
+.file-type{font-size:9px;color:#888}
+.file-btns{margin-top:1px;font-size:14px}
+.file-btns a{text-decoration:none;margin-right:7px}
+form{position:fixed;bottom:0;left:0;right:0;background:white;display:flex;padding:7px;gap:6px;align-items:center}
+form input[type="text"]{flex:1;padding:7px;border-radius:20px;border:1px solid #ccc;font-size:12px}
+form button{background:#25d366;color:white;border:none;padding:7px 11px;border-radius:50%;cursor:pointer;font-size:15px}
+.header{
+  display:flex; align-items:center; gap:12px;
+  padding:12px 15px; background:#075E54; color:white;
+  position:fixed; top:0; left:0; right:0; z-index:10;
+}
+#chat-box{
+  margin-top:60px; margin-bottom:70px;
+  padding:10px; display:flex; flex-direction:column;
+  width:100%; box-sizing:border-box;
+}
+.msg{ max-width:75%; padding:8px 12px; border-radius:10px; margin:5px 0; }
+.mine{ align-self:flex-end; background:#dcf8c6; }
+.other{ align-self:flex-start; background:white; }
+#chatForm{
+  position:fixed; bottom:0; left:0; right:0;
+  display:flex; gap:8px; padding:10px;
+  background:white; box-sizing:border-box;
+}
+#chatForm input[type="text"]{ flex:1; }
+</style>
+</head>
+<body>
+<div class="header"><a href="/chat/" style="color:white;text-decoration:none;">← Back</a><a href="{% url 'group_details' group.id %}" style="color:white;text-decoration:none;display:flex;align-items:center;gap:10px">{% if group.icon %}<img src="{{ group.icon.url }}" alt="" style="width:34px;height:34px;object-fit:cover;border-radius:50%">{% else %}<span style="width:34px;height:34px;border-radius:50%;background:#128c7e;display:inline-flex;align-items:center;justify-content:center">👥</span>{% endif %}<span><strong>{{ group.name }}</strong><small style="display:block;font-size:11px">{{ group.members.count }} members · Group info</small></span></a></div>
+<div id="box"></div>
+<form id="chatForm" method="POST" enctype="multipart/form-data">
+{% csrf_token %}
+<input type="text" name="message" placeholder="Type a message...">
+<input type="file" name="attachment" id="fileInput">
+<button type="submit">➤</button>
+</form>
+<script>
+const groupId = "{{ group.id }}";
+const box = document.getElementById('box');
+const currentUser = "{{ request.user.username }}";
+function cleanName(url){
+  let name = decodeURIComponent(url.split('/').pop());
+  name = name.replace(/_[a-zA-Z0-9]{6,8}(\.[a-z]+)$/, '$1');
+  name = name.replace(/_/g, ' ');
+  return name;
+}
+function getFileInfo(url){
+  let lower = url.toLowerCase();
+  if(lower.endsWith('.pdf')) return ['logo-pdf','PDF','PDF'];
+  if(lower.endsWith('.doc') || lower.endsWith('.docx')) return ['logo-doc','W','Word'];
+  if(lower.endsWith('.xls') || lower.endsWith('.xlsx')) return ['logo-xls','X','Excel'];
+  if(lower.endsWith('.ppt') || lower.endsWith('.pptx')) return ['logo-ppt','P','PowerPoint'];
+  if(lower.endsWith('.zip') || lower.endsWith('.rar')) return ['logo-zip','ZIP','Zip'];
+  if(lower.endsWith('.jpg') || lower.endsWith('.jpeg') || lower.endsWith('.png') || lower.endsWith('.gif') || lower.endsWith('.webp')) return ['logo-photo','IMG','Photo'];
+  if(lower.endsWith('.mp4') || lower.endsWith('.mov')) return ['logo-video','VID','Video'];
+  if(lower.endsWith('.mp3') || lower.endsWith('.wav')) return ['logo-audio','MP3','Audio'];
+  return ['logo-file','FILE','File'];
+}
+function renderMessages(messages){
+  box.innerHTML = '';
+  messages.forEach(m => {
+    let div = document.createElement('div');
+    div.className = 'msg' + (m.sender === currentUser ? ' mine' : '');
+    let html = `<b>${m.sender}:</b><br>${m.message || ''}`;
+    if(m.attachment_url){
+      let url = m.attachment_url;
+      let name = cleanName(url);
+      let info = getFileInfo(url);
+      if(info[2] === 'Photo'){
+        html += `<br><a href="${url}" target="_blank"><img src="${url}"></a><br><div class="file-btns"><a href="${url}" target="_blank">👁️</a><a href="${url}" download>⬇️</a></div>`;
+      } else {
+        html += `<br><div class="file-box"><div class="file-logo ${info[0]}">${info[1]}</div><div><div class="file-name">${name}</div><div class="file-type">${info[2]}</div><div class="file-btns"><a href="${url}" target="_blank">👁️</a><a href="${url}" download>⬇️</a></div></div></div>`;
+      }
+    }
+    div.innerHTML = html;
+    box.appendChild(div);
+  });
+  window.scrollTo(0, document.body.scrollHeight);
+}
+function loadMessages(){
+  fetch(`/chat/groups/${groupId}/messages/`).then(r => r.json()).then(data => renderMessages(data.messages));
+}
+document.getElementById('chatForm').addEventListener('submit', function(e){
+  e.preventDefault();
+  let formData = new FormData(this);
+  fetch(`/chat/groups/${groupId}/`, {method:'POST', body:formData, headers:{'X-CSRFToken':'{{ csrf_token }}'}}).then(()=>{ this.reset(); loadMessages(); });
+});
+setInterval(loadMessages, 2000);
+loadMessages();
+</script>
+</body>
+</html>

@@ -1,0 +1,50 @@
+{% extends 'home/base.html' %}
+{% load static %}
+{% block title %}Chemistry{% endblock title %}
+{% block content %}
+
+ 
+<h1>Chemistry</h1>
+
+<br>
+</br>
+
+    
+    
+     
+    <div class = "container">
+      <div class="container marketing">
+    
+        <!-- Three columns of text below the carousel -->
+        <div class="row">
+          <div class="col-lg-4">
+            <img src="{% static 'dp.images/mit.jpg' %}" class="img-fluid rounded-start bd-placeholder-img rounded-circle" alt="Profile Image" width= 73% height= 73%>
+            <h2 class="fw-normal">Chemistry</h2>
+            <p>This Book includes the complete course of Chemistry acording to the course contents.  </p>
+            <p><a class="btn btn-secondary" href="{% url 'chemistry' %}">Go To course &raquo;</a></p>
+          </div><!-- /.col-lg-4 -->
+          <div class="col-lg-4">
+            <img src="{% static 'dp.images/dt.jpg' %}" class="img-fluid rounded-start bd-placeholder-img rounded-circle" alt="Profile Image" width= 85% height= 85%>
+            <h2 class="fw-normal">Bio Chemistry</h2>
+            <p>This Book includes the complete course of Bio-Chemistry acording to the course contents for students.</p>
+            <p><a class="btn btn-secondary" href="{% url 'biochem' %}">Go To Course &raquo;</a></p>
+          </div><!-- /.col-lg-4 -->
+         
+          
+        </div><!-- /.row -->
+    </div>
+
+    <br>
+    <br>
+  
+            </div>
+<br>
+<br>
+<br>
+
+
+
+
+
+
+{% endblock content %}

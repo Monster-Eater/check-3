@@ -1,0 +1,50 @@
+{% extends 'home/base.html' %}
+{% load static %}
+{% block title %}Engineering{% endblock title %}
+{% block content %}
+
+ 
+<h1>Engineering</h1>
+
+<br>
+</br>
+
+    
+    
+     
+    <div class = "container">
+      <div class="container marketing">
+    
+        <!-- Three columns of text below the carousel -->
+        <div class="row">
+          <div class="col-lg-4">
+            <img src="{% static 'dp.images/mit.jpg' %}" class="img-fluid rounded-start bd-placeholder-img rounded-circle" alt="Profile Image" width= 73% height= 73%>
+            <h2 class="fw-normal">Electrical Engineering</h2>
+            <p>This Book includes the complete course of Electrical Engineering acording to the course contents.  </p>
+            <p><a class="btn btn-secondary" href="{% url 'electricalengin' %}">Go To course &raquo;</a></p>
+          </div><!-- /.col-lg-4 -->
+          <div class="col-lg-4">
+            <img src="{% static 'dp.images/bio-info.jpg' %}" class="img-fluid rounded-start bd-placeholder-img rounded-circle" alt="Profile Image" width= 75% height= 75%>
+            <h2 class="fw-normal">Bio Informatics </h2>
+            <p>This Book includes the complete course of Bio-Informatics acording to the course contents for students.</p>
+            <p><a class="btn btn-secondary" href="{% url 'bioinformatics' %}">Go To Course &raquo;</a></p>
+          </div><!-- /.col-lg-4 -->
+         
+          
+        </div><!-- /.row -->
+    </div>
+
+    <br>
+    <br>
+  
+            </div>
+<br>
+<br>
+<br>
+
+
+
+
+
+
+{% endblock content %}

@@ -1,0 +1,44 @@
+{% extends 'home/base.html' %}
+
+{% block title %} Events {% endblock title %}
+
+{% block content %}
+{% if user.is_authenticated %}
+<br><br>
+
+<div class="shadow p-4 mb-5 bg-body rounded">
+
+  {% if event.venue_image %}
+  <h1> Events </h1>
+  
+  
+  <img src="{{ event.venue_image.url }}" width=300>
+
+  {% endif %}
+
+
+
+
+
+
+
+
+
+
+<br>
+
+  <h1>There is No Past Events Yet....!</h1>
+
+  {% else %}
+  <br>
+  <br>
+  <h1>Sorry! You Must Be Logged In To View Campus Events......!
+  </h1>
+  <br>
+  <br>
+  <a class="btn btn-secondary" href=" {% url 'login' %} ">Login Here</a>
+</div>
+{% endif %}
+
+
+{% endblock content %}

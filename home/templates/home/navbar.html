@@ -1,0 +1,136 @@
+
+{% load static %}
+
+<nav class="navbar navbar-expand-lg bg-body-secondary">
+    <div class="container-fluid">
+      {% if user.is_authenticated %}
+        
+      <ul class="navbar-nav ml-auto">
+        <li class="nav-link navbar-brand">
+          {% if user.profile.profile_image %}
+          <a href="{% url 'profile' request.user.id %} "><img src="{{ user.profile.profile_image.url }}" class="rounded-circle" height="25" width="25" > </a>
+          {% else %}
+          <a href="{% url 'profile' request.user.id %} "><img src=" {% static 'images/20th.jpg' %} " width="25" height="25" class="rounded-circle"></a>
+          {% endif %}
+        </li>
+
+      </ul>
+      {% endif %}
+      <a class="navbar-brand" href=" {% url 'campus' %} ">Alkosar SanaTios</a>
+      
+      <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarSupportedContent" aria-controls="navbarSupportedContent" aria-expanded="false" aria-label="Toggle navigation">
+        <span class="navbar-toggler-icon"></span>
+      </button>
+      <div class="collapse navbar-collapse" id="navbarSupportedContent">
+        <ul class="navbar-nav me-auto mb-2 mb-lg-0">
+          
+          <li class="nav-item">
+            <a class="nav-link" href=" {% url 'home' %} ">Home</a>
+          </li>
+          <li class="nav-item">
+  <a class="nav-link" href="/chat/">💬 Chats</a>
+</li>
+          <li class="nav-item">
+            <a class="nav-link" href=" {% url 'video' %} ">CampusTube</a>
+          </li>
+
+          <!-- </html><li class="nav-item">
+            <a class="nav-link" href="#">Own Videos</a>
+          </li> -->
+
+
+
+
+          <li class="nav-item dropdown">
+            <a class="nav-link dropdown-toggle" href="#" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+              Events
+            </a>
+            <ul class="dropdown-menu">
+
+              <!-- <li><a class="dropdown-item" href=" {% url 'add_category' %} "></a></li> -->
+              
+              <li><a class="dropdown-item" href="{% url 'vant' %}">Past Events</a></li>
+              <li><hr class="dropdown-divider"></li>
+              <li><a class="dropdown-item" href="{% url 'list_events' %}"> Comming Events </a></li>
+            </ul>
+          </li>
+            {% if user.is_authenticated %} 
+          <li class="nav-item">
+            <a class="nav-link" href=" {% url 'logout' %} ">Logout</a>
+          </li>
+          
+          
+          <!-- <li class="nav-item dropdown">
+            <a class="nav-link dropdown-toggle" href="#" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+              Tools
+            </a>
+            <ul class="dropdown-menu">
+              <li><a class="dropdown-item" href=" {% url 'bmi' %} ">Calculate BMI</a></li>
+              <li><hr class="dropdown-divider"></li>
+              <li><a class="dropdown-item" href="{% url 'donate' %}">Donate Blood</a></li>
+              <li><hr class="dropdown-divider"></li>
+              <li><a class="dropdown-item" href="{% url 'predict' %}">Predict Diabetes</a></li>
+              
+            </ul> -->
+          {% else %} 
+        
+          <li class="nav-item">
+            <a class="nav-link" href=" {% url 'login' %} ">Login</a>
+          </li>
+          
+          {% endif %}  
+         
+          <li class="nav-item dropdown">
+            <a class="nav-link dropdown-toggle" href="#" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+              Search
+            </a>
+            <ul class="dropdown-menu">
+              <!-- <li><a class="dropdown-item" href="{% url 'search' %} ">Search Meeps</a></li> -->
+              <li><hr class="dropdown-divider"></li>
+              <li><a class="dropdown-item" href="{% url 'search_user' %}">Search Users</a></li>
+              <li><hr class="dropdown-divider"></li>
+              <li><a class="dropdown-item" href="{% url 'profile_list' %}">User's</a></li>
+                
+              </li>
+            </ul>
+          </li>
+         
+        </ul>
+            
+        <ul class="nav justify-content-end">
+          <li class="nav-item dropdown ">
+            <a class="nav-link dropdown-toggle" href="#" role="button" data-bs-toggle="dropdown" aria-expanded="false" style="color: black;">
+              Courses 
+            </a>
+            <ul class="dropdown-menu">
+              <li><a class="dropdown-item bg-body-secondary"  
+                href=" {% url 'rehb' %} ">Short Courses</a></li>              
+              <li><hr class="dropdown-divider"></li>
+              <li><a class="dropdown-item bg-body-secondary" href=" {% url 'applied' %} ">Long Courses</a></li>
+              <li><hr class="dropdown-divider"></li>
+              <!-- <li><a class="dropdown-item bg-body-secondary" href=" {% url 'comp' %} ">Diploma Courses</a></li>
+              <li><hr class="dropdown-divider"></li>
+              <li><a class="dropdown-item bg-body-secondary" href="  {% url 'engin' %}">Online Courses</a></li> -->
+              <li><hr class="dropdown-divider"></li>
+              <!-- <li><a class="dropdown-item bg-body-secondary" href=" {% url 'islamic_study' %} "> Islamic Studies </a></li>
+              <li><hr class="dropdown-divider"></li>
+              <li><a class="dropdown-item bg-body-secondary" href=" {% url 'phsyco' %} "> Physcology </a></li>
+              <li><hr class="dropdown-divider"></li>
+              <li><a class="dropdown-item bg-body-secondary" href=" {% url 'chemis' %} "> Chemistry </a></li>
+              <li><hr class="dropdown-divider"></li>
+              <li><a class="dropdown-item bg-body-secondary" href=" {% url 'socio' %} "> Sociology </a></li> -->
+            </ul>
+          </li>
+          <li class="nav-item">
+            <a class="nav-link" href=" {% url 'complaint' %} " style="color: black;" >Complaints</a>
+          </li>
+          <li class="nav-item">
+            <a class="nav-link" href=" {% url 'add-event' %}" style="color:black;" >Review Articles</a>
+          </li>
+
+          
+        </ul>
+      </div> 
+     </div>
+  </div>
+</nav>

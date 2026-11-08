@@ -1,0 +1,73 @@
+{% extends 'home/base.html' %}
+{% load static %}
+{% block title %}Search Meeps{% endblock title %}
+{% block content %}
+
+
+
+
+<h1>Search Meeps!</h1><br>
+<br>
+
+
+<form method=POST>
+    {% csrf_token %}
+    <input type="input" class="form-control" placeholder="Search Meeps" name="search">
+    <br><br>
+
+
+    <button type="submit" class="btn btn-secondary">Search Meep!</button>
+</form>
+<br><br>
+{% if search %}
+ <h3> You Search For: {{search}} </h3>
+<br>
+{% for meep in searched %}
+
+<div class="alert alert-dark" role="alert">
+    <div class="container">
+        <div class="row">
+            <div class="col-1">
+
+                {% if meep.user.profile.profile_image %}
+                <img src="{{ meep.user.profile.profile_image.url }}" width="70" height="70"
+                    alt="{{ profile.user.username }}" class="rounded-circle">
+
+                {% else %}
+                <img src=" {% static 'images/3rd.jpg' %} " width="70" height="70" class="rounded-circle"
+                    alt="{{ profile.user.username }}">
+                {% endif %}
+
+
+            </div>
+            <div class="col-4">
+                {{ meep.title|slice:":50"|safe }} <br>
+                {{ meep.body|slice:":50"|safe }} <br>
+                <small class="text-muted">
+                     {{ meep.category }} &nbsp; 
+                    ({{ meep.created_at }}) By
+                    @{{ meep.user.username }}
+                    &nbsp; &nbsp; {{ meep.number_of_likes }}
+
+                    {% if user in meep.likes.all %}
+
+                    <a href=" {% url 'meep_like' meep.id %} ">
+                        <i class="fa-solid fa-heart" style="color:red"></i></a>
+                    {% else %}
+                    <a href=" {% url 'meep_like' meep.id %} ">
+                        <i class="fa fa-heart-o" style="color:red"></i></a>
+                    {% endif %}
+                    <a href=" {% url 'meep_show' meep.id %} ">
+                        <i class="fa-solid fa-share" style="color:gray"></i></a> 
+                </small>
+            </div><br>
+        </div>
+    </div>
+    </div>
+</div>
+
+<br><br>
+{% endfor %}
+{% endif %}
+<br><br>
+{% endblock content %}
