@@ -9,6 +9,10 @@ class Message(models.Model):
     timestamp = models.DateTimeField(auto_now_add=True)
     attachment = models.FileField(upload_to='chat_attachments/', blank=True, null=True)
     read_at = models.DateTimeField(blank=True, null=True)
+    edited_at = models.DateTimeField(blank=True, null=True)
+    reply_to = models.ForeignKey('self', null=True, blank=True, on_delete=models.SET_NULL, related_name='replies')
+    hidden_for = models.ManyToManyField(User, blank=True, related_name='hidden_chat_messages')
+    is_deleted = models.BooleanField(default=False)
 
     def __str__(self):
         return f"{self.sender.username} to {self.receiver.username}: {self.message[:20]}"
@@ -18,6 +22,7 @@ class Group(models.Model):
     members = models.ManyToManyField(User, related_name='chat_groups')
     icon = models.FileField(upload_to='group_icons/', blank=True, null=True)
     rules = models.TextField(blank=True)
+    admin = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL, related_name='administered_chat_groups')
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
@@ -29,6 +34,9 @@ class GroupMessage(models.Model):
     message = models.TextField(blank=True, null=True)
     attachment = models.FileField(upload_to='chat_files/', blank=True, null=True)
     timestamp = models.DateTimeField(auto_now_add=True)
+    edited_at = models.DateTimeField(blank=True, null=True)
+    reply_to = models.ForeignKey('self', null=True, blank=True, on_delete=models.SET_NULL, related_name='replies')
+    is_deleted = models.BooleanField(default=False)
 
     def __str__(self):
         return f"{self.sender.username} in {self.group.name}: {self.message[:20]}"

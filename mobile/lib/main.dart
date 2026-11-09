@@ -60,8 +60,11 @@ class _CampusTimesAppState extends State<CampusTimesApp> {
         ? const Scaffold(body: Center(child: CircularProgressIndicator()))
         : signedIn
         ? HomeShell(
+            key: ValueKey(api.activeUsername),
             api: api,
             onSignOut: () => setState(() => signedIn = false),
+            onAddAccount: () => setState(() => signedIn = false),
+            onSwitchAccount: () => setState(() => signedIn = true),
             dark: themeMode == ThemeMode.dark,
             onTheme: (v) async {
               final prefs = await SharedPreferences.getInstance();
@@ -75,6 +78,7 @@ class _CampusTimesAppState extends State<CampusTimesApp> {
         : LoginScreen(
             api: api,
             onSignedIn: () => setState(() => signedIn = true),
+            onCancel: api.token != null ? () => setState(() => signedIn = true) : null,
           ),
   );
 }
@@ -101,6 +105,14 @@ Future<PickedUpload?> pickUpload({bool imagesOnly = false}) async {
 /// Shared media tools for direct and group conversations.
 class ChatMediaTools {
   static final ImagePicker camera = ImagePicker();
+
+  static Future<PickedUpload?> gallery({required bool video}) async {
+    final XFile? picked = video
+        ? await camera.pickVideo(source: ImageSource.gallery)
+        : await camera.pickImage(source: ImageSource.gallery, imageQuality: 90);
+    if (picked == null) return null;
+    return PickedUpload(picked.name, await picked.readAsBytes(), picked.mimeType);
+  }
 
   static Future<PickedUpload?> capture({required bool video}) async {
     final XFile? picked = video
@@ -472,6 +484,7 @@ class _InlineVideoPlayerState extends State<InlineVideoPlayer> {
 
 class CampusApi {
   String? token;
+  String? activeUsername;
   String? serverOverride;
   final prefsFuture = SharedPreferences.getInstance();
   String get base {
@@ -491,6 +504,7 @@ class CampusApi {
   Future<bool> restore() async {
     serverOverride = (await prefsFuture).getString('server_url');
     token = (await prefsFuture).getString('api_token');
+    activeUsername = (await prefsFuture).getString('active_username');
     if (token == null) return false;
     try {
       await get('/api/mobile/me/');
@@ -545,6 +559,9 @@ class CampusApi {
           body: jsonEncode(data),
         )
         .timeout(const Duration(seconds: 30)),
+  );
+  Future<dynamic> delete(String p) async => decode(
+    await http.delete(uri(p), headers: headers).timeout(const Duration(seconds: 30)),
   );
   Future<dynamic> upload(
     String p, {
@@ -601,7 +618,8 @@ class CampusApi {
   Future<void> signUp(Map<String, dynamic> details) async {
     final data = await post('/api/mobile/signup/', details);
     token = data['token'];
-    await (await prefsFuture).setString('api_token', token!);
+    activeUsername = (data['username'] ?? details['username']).toString();
+    await _rememberAccount();
   }
 
   Future<void> signIn(String username, String password) async {
@@ -610,7 +628,35 @@ class CampusApi {
       'password': password,
     });
     token = data['token'];
-    await (await prefsFuture).setString('api_token', token!);
+    activeUsername = (data['username'] ?? username).toString();
+    await _rememberAccount();
+  }
+
+  Future<void> _rememberAccount() async {
+    final prefs=await prefsFuture;
+    final raw=prefs.getString('saved_accounts')??'{}';
+    Map<String,dynamic> accounts={};
+    try{accounts=Map<String,dynamic>.from(jsonDecode(raw) as Map);}catch(_){}
+    if(activeUsername!=null&&token!=null)accounts[activeUsername!]=token;
+    await prefs.setString('saved_accounts',jsonEncode(accounts));
+    await prefs.setString('active_username',activeUsername??'');
+    if(token!=null)await prefs.setString('api_token',token!);
+  }
+
+  Future<List<String>> accountNames() async {
+    final raw=(await prefsFuture).getString('saved_accounts')??'{}';
+    try{return Map<String,dynamic>.from(jsonDecode(raw) as Map).keys.cast<String>().toList();}catch(_){return <String>[];}
+  }
+
+  Future<void> switchAccount(String username) async {
+    final prefs=await prefsFuture;
+    final raw=prefs.getString('saved_accounts')??'{}';
+    final accounts=Map<String,dynamic>.from(jsonDecode(raw) as Map);
+    final next=accounts[username];
+    if(next==null)throw Exception('Saved account not found. Sign in again.');
+    token=next.toString(); activeUsername=username;
+    await prefs.setString('api_token',token!); await prefs.setString('active_username',username);
+    await get('/api/mobile/me/');
   }
 
   Future<void> signOut() async {
@@ -618,7 +664,13 @@ class CampusApi {
       await http.delete(uri('/api/mobile/me/'), headers: headers);
     } catch (_) {}
     token = null;
+    if(activeUsername!=null){
+      final prefs=await prefsFuture; final raw=prefs.getString('saved_accounts')??'{}';
+      try{final accounts=Map<String,dynamic>.from(jsonDecode(raw) as Map);accounts.remove(activeUsername);await prefs.setString('saved_accounts',jsonEncode(accounts));}catch(_){}
+    }
+    activeUsername=null;
     await (await prefsFuture).remove('api_token');
+    await (await prefsFuture).remove('active_username');
   }
 }
 
@@ -645,9 +697,10 @@ String initials(String value) =>
     value.isEmpty ? '?' : value.trim()[0].toUpperCase();
 
 class LoginScreen extends StatefulWidget {
-  const LoginScreen({super.key, required this.api, required this.onSignedIn});
+  const LoginScreen({super.key, required this.api, required this.onSignedIn, this.onCancel});
   final CampusApi api;
   final VoidCallback onSignedIn;
+  final VoidCallback? onCancel;
   @override
   State<LoginScreen> createState() => _LoginScreenState();
 }
@@ -752,6 +805,7 @@ class _LoginScreenState extends State<LoginScreen> {
                     'Your campus. Your community.',
                     textAlign: TextAlign.center,
                   ),
+                  if(widget.onCancel!=null) Align(alignment:Alignment.centerLeft,child:TextButton.icon(onPressed:widget.onCancel,icon:const Icon(Icons.arrow_back),label:const Text('Back to current account'))),
                   TextButton.icon(
                     onPressed: busy ? null : configureServer,
                     icon: const Icon(Icons.dns_outlined),
@@ -1000,11 +1054,15 @@ class HomeShell extends StatefulWidget {
     required this.onSignOut,
     required this.dark,
     required this.onTheme,
+    required this.onAddAccount,
+    required this.onSwitchAccount,
   });
   final CampusApi api;
   final VoidCallback onSignOut;
   final bool dark;
   final ValueChanged<bool> onTheme;
+  final VoidCallback onAddAccount;
+  final VoidCallback onSwitchAccount;
   @override
   State<HomeShell> createState() => _HomeShellState();
 }
@@ -1091,6 +1149,14 @@ class _HomeShellState extends State<HomeShell> {
                   ),
                 );
               if (v == 'theme') widget.onTheme(!widget.dark);
+              if (v == 'add_account') widget.onAddAccount();
+              if (v == 'switch_account') {
+                final names=await widget.api.accountNames();
+                final others=names.where((n)=>n!=widget.api.activeUsername).toList();
+                if(others.isEmpty){if(c.mounted)snack(c,'No other saved account yet. Choose Add account first.');return;}
+                final selected=await showDialog<String>(context:c,builder:(ctx)=>SimpleDialog(title:const Text('Switch account'),children:[for(final name in others)SimpleDialogOption(onPressed:()=>Navigator.pop(ctx,name),child:Text('@$name'))]));
+                if(selected!=null){try{await widget.api.switchAccount(selected);widget.onSwitchAccount();}catch(e){if(c.mounted)snack(c,errorText(e));}}
+              }
               if (v == 'logout') {
                 await widget.api.signOut();
                 widget.onSignOut();
@@ -1098,6 +1164,8 @@ class _HomeShellState extends State<HomeShell> {
             },
             itemBuilder: (_) => const [
               PopupMenuItem(value: 'profile', child: Text('My profile')),
+              PopupMenuItem(value: 'add_account', child: Text('Add account')),
+              PopupMenuItem(value: 'switch_account', child: Text('Switch account')),
               PopupMenuItem(value: 'logout', child: Text('Sign out')),
             ],
           ),
@@ -1291,6 +1359,21 @@ class _FeedScreenState extends State<FeedScreen> {
     }
   }
 
+  Future<void> postActions(dynamic p, String action) async {
+    final url='/api/mobile/feed/${p['id']}/';
+    try {
+      if(action=='delete'){
+        final yes=await showDialog<bool>(context:context,builder:(ctx)=>AlertDialog(title:const Text('Delete post?'),content:const Text('This will remove the post and its comments.'),actions:[TextButton(onPressed:()=>Navigator.pop(ctx,false),child:const Text('Cancel')),FilledButton(onPressed:()=>Navigator.pop(ctx,true),child:const Text('Delete'))]));
+        if(yes!=true)return; await widget.api.delete(url);
+      } else {
+        final edit=TextEditingController(text:(p['body']??'').toString());
+        final body=await showDialog<String>(context:context,builder:(ctx)=>AlertDialog(title:const Text('Edit post'),content:TextField(controller:edit,maxLines:5,autofocus:true),actions:[TextButton(onPressed:()=>Navigator.pop(ctx),child:const Text('Cancel')),FilledButton(onPressed:()=>Navigator.pop(ctx,edit.text.trim()),child:const Text('Save'))]));
+        edit.dispose(); if(body==null)return; await widget.api.patch(url,{'body':body});
+      }
+      await refresh();
+    } catch(e){if(mounted)snack(context,errorText(e));}
+  }
+
   Future<void> comments(dynamic p) async {
     await showModalBottomSheet(
       context: context,
@@ -1426,6 +1509,8 @@ class _FeedScreenState extends State<FeedScreen> {
             onLike: () => like(p),
             onComments: () => comments(p),
             onShare: () => share(p),
+            onEdit: p['is_mine']==true ? () => postActions(p,'edit') : null,
+            onDelete: p['is_mine']==true ? () => postActions(p,'delete') : null,
             onProfile: () => Navigator.push(
               c,
               MaterialPageRoute(
@@ -1448,10 +1533,14 @@ class PostCard extends StatelessWidget {
     required this.onComments,
     required this.onProfile,
     this.onShare,
+    this.onEdit,
+    this.onDelete,
   });
   final dynamic post;
   final VoidCallback onLike, onComments, onProfile;
   final VoidCallback? onShare;
+  final VoidCallback? onEdit;
+  final VoidCallback? onDelete;
   @override
   Widget build(BuildContext c) {
     final a = post['author'] ?? {};
@@ -1498,7 +1587,9 @@ class PostCard extends StatelessWidget {
                     ),
                   ),
                 ),
-                const Icon(Icons.more_horiz),
+                if (onEdit != null || onDelete != null)
+                  PopupMenuButton<String>(onSelected:(v){if(v=='edit'){onEdit?.call();}else{onDelete?.call();}},itemBuilder:(_)=>[if(onEdit!=null)const PopupMenuItem(value:'edit',child:Text('Edit post')),if(onDelete!=null)const PopupMenuItem(value:'delete',child:Text('Delete post'))])
+                else const Icon(Icons.more_horiz),
               ],
             ),
             if ((post['title'] ?? '').toString().isNotEmpty)
@@ -1583,6 +1674,7 @@ class CommentsSheet extends StatefulWidget {
 
 class _CommentsSheetState extends State<CommentsSheet> {
   List comments = [];
+  Map? replyTo;
   bool loading = true, sending = false;
   final text = TextEditingController();
   @override
@@ -1610,14 +1702,31 @@ class _CommentsSheetState extends State<CommentsSheet> {
     try {
       await widget.api.post('/api/mobile/feed/${widget.post['id']}/comments/', {
         'body': text.text.trim(),
+        if (replyTo != null) 'parent_id': replyTo!['id'],
       });
       text.clear();
+      replyTo = null;
       await load();
     } catch (e) {
       if (mounted) snack(context, errorText(e));
     } finally {
       if (mounted) setState(() => sending = false);
     }
+  }
+
+  Future<void> commentAction(Map comment, String action) async {
+    final path='/api/mobile/feed/${widget.post['id']}/comments/${comment['id']}/';
+    try {
+      if(action=='reply'){setState(()=>replyTo=comment);return;}
+      if(action=='delete'){
+        await widget.api.delete(path);
+      } else {
+        final edit=TextEditingController(text:(comment['body']??'').toString());
+        final body=await showDialog<String>(context:context,builder:(ctx)=>AlertDialog(title:const Text('Edit comment'),content:TextField(controller:edit,maxLines:4),actions:[TextButton(onPressed:()=>Navigator.pop(ctx),child:const Text('Cancel')),FilledButton(onPressed:()=>Navigator.pop(ctx,edit.text.trim()),child:const Text('Save'))]));
+        edit.dispose(); if(body==null)return; await widget.api.patch(path,{'body':body});
+      }
+      await load();
+    }catch(e){if(mounted)snack(context,errorText(e));}
   }
 
   @override
@@ -1654,7 +1763,12 @@ class _CommentsSheetState extends State<CommentsSheet> {
                           x['username'],
                           style: const TextStyle(fontWeight: FontWeight.bold),
                         ),
-                        subtitle: Text(x['body']),
+                        subtitle: Column(crossAxisAlignment:CrossAxisAlignment.start,children:[if((x['parent_username']??'').toString().isNotEmpty)Text('Replying to @${x['parent_username']}',style:Theme.of(c).textTheme.labelSmall),Text(x['body'])]),
+                        trailing: PopupMenuButton<String>(onSelected:(v)=>commentAction(Map<String,dynamic>.from(x),v),itemBuilder:(_)=>[
+                          const PopupMenuItem(value:'reply',child:Text('Reply')),
+                          if(x['is_mine']==true) const PopupMenuItem(value:'edit',child:Text('Edit')),
+                          if(x['is_mine']==true||widget.post['is_mine']==true) const PopupMenuItem(value:'delete',child:Text('Delete')),
+                        ]),
                       );
                     },
                   ),
@@ -1662,7 +1776,9 @@ class _CommentsSheetState extends State<CommentsSheet> {
           SafeArea(
             child: Padding(
               padding: const EdgeInsets.all(12),
-              child: Row(
+              child: Column(mainAxisSize:MainAxisSize.min,children:[
+                if(replyTo!=null) ListTile(dense:true,title:Text('Replying to @${replyTo!['username']}'),subtitle:Text('${replyTo!['body']}',maxLines:1,overflow:TextOverflow.ellipsis),trailing:IconButton(onPressed:()=>setState(()=>replyTo=null),icon:const Icon(Icons.close))),
+                Row(
                 children: [
                   Expanded(
                     child: TextField(
@@ -1679,7 +1795,8 @@ class _CommentsSheetState extends State<CommentsSheet> {
                     icon: const Icon(Icons.send),
                   ),
                 ],
-              ),
+                ),
+              ]),
             ),
           ),
         ],
@@ -1854,8 +1971,10 @@ class _ChatScreenState extends State<ChatScreen> {
   final recorder = AudioRecorder();
   bool recording = false;
   Map? currentPerson;
+  Map? replyTo;
   List messages = [];
   bool loading = true, sending = false, online = false, typing = false;
+  String lastSeen = '';
   String? error;
   Timer? timer;
   Timer? typingTimer;
@@ -1880,6 +1999,7 @@ class _ChatScreenState extends State<ChatScreen> {
           messages = d['messages'] ?? [];
           online = d['online'] == true;
           typing = d['typing'] == true;
+          lastSeen = (d['last_seen'] ?? '').toString();
           error = null;
           loading = false;
         });
@@ -1898,7 +2018,8 @@ class _ChatScreenState extends State<ChatScreen> {
     input.clear();
     setState(() => sending = true);
     try {
-      await widget.api.post(path, {'message': t});
+      await widget.api.post(path, {'message': t, if (replyTo != null) 'reply_to_id': replyTo!['id']});
+      replyTo = null;
       await load();
     } catch (e) {
       if (mounted) {
@@ -1908,6 +2029,36 @@ class _ChatScreenState extends State<ChatScreen> {
     } finally {
       if (mounted) setState(() => sending = false);
     }
+  }
+
+  Future<void> messageActions(Map m) async {
+    final action = await showModalBottomSheet<String>(context: context, builder: (sheet) => SafeArea(child: Wrap(children: [
+      ListTile(leading: const Icon(Icons.reply), title: const Text('Reply'), onTap: () => Navigator.pop(sheet, 'reply')),
+      if (m['is_me'] == true && (m['attachment'] ?? '').toString().isEmpty && m['message'] != 'This message was deleted')
+        ListTile(leading: const Icon(Icons.edit), title: const Text('Edit message'), onTap: () => Navigator.pop(sheet, 'edit')),
+      if (m['is_me'] == true) ListTile(leading: const Icon(Icons.delete_outline), title: const Text('Delete message'), onTap: () => Navigator.pop(sheet, 'delete')),
+    ])));
+    if (!mounted || action == null) return;
+    if (action == 'reply') { setState(() => replyTo = m); return; }
+    final url = '$path${m['id']}/';
+    try {
+      if (action == 'delete') await widget.api.delete(url);
+      if (action == 'edit') {
+        final edit = TextEditingController(text: (m['message'] ?? '').toString());
+        final value = await showDialog<String>(context: context, builder: (ctx) => AlertDialog(title: const Text('Edit message'), content: TextField(controller: edit, autofocus: true), actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')), FilledButton(onPressed: () => Navigator.pop(ctx, edit.text.trim()), child: const Text('Save'))]));
+        edit.dispose();
+        if (value == null || value.isEmpty) return;
+        await widget.api.patch(url, {'message': value});
+      }
+      await load();
+    } catch (e) { if (mounted) snack(context, errorText(e)); }
+  }
+
+  Future<void> clearChat() async {
+    final ok = await showDialog<bool>(context: context, builder: (ctx) => AlertDialog(title: const Text('Delete chat from your inbox?'), content: const Text('This hides the conversation only for your account.'), actions: [TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')), FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Delete chat'))]));
+    if (ok != true) return;
+    try { await widget.api.delete('${path}clear/'); if (mounted) Navigator.pop(context); }
+    catch (e) { if (mounted) snack(context, errorText(e)); }
   }
 
   Future<void> sendMedia(
@@ -2028,6 +2179,22 @@ class _ChatScreenState extends State<ChatScreen> {
               },
             ),
             ListTile(
+              leading: const Icon(Icons.photo_library_outlined),
+              title: const Text('Choose photo from gallery'),
+              onTap: () {
+                Navigator.pop(sheetContext);
+                ChatMediaTools.gallery(video: false).then((f) => sendMedia(f, photoEdit: true));
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.video_library_outlined),
+              title: const Text('Choose video from gallery'),
+              onTap: () {
+                Navigator.pop(sheetContext);
+                ChatMediaTools.gallery(video: true).then((f) => sendMedia(f, videoEdit: true));
+              },
+            ),
+            ListTile(
               leading: const Icon(Icons.attach_file),
               title: const Text('Choose file'),
               onTap: () {
@@ -2113,7 +2280,7 @@ class _ChatScreenState extends State<ChatScreen> {
                       ? 'typing…'
                       : online
                       ? 'online'
-                      : 'offline',
+                      : lastSeen.isNotEmpty ? 'last seen ${stamp(lastSeen)}' : 'offline',
                   style: Theme.of(c).textTheme.labelSmall,
                 ),
               ],
@@ -2121,6 +2288,7 @@ class _ChatScreenState extends State<ChatScreen> {
           ),
         ],
       ),
+      actions: [PopupMenuButton<String>(onSelected: (v) { if (v == 'clear') clearChat(); }, itemBuilder: (_) => const [PopupMenuItem(value: 'clear', child: Text('Delete chat'))])],
     ),
     body: Column(
       children: [
@@ -2145,7 +2313,11 @@ class _ChatScreenState extends State<ChatScreen> {
                     final m = messages[messages.length - 1 - i];
                     final mine = m['is_me'] == true;
                     final attachment = m['attachment'] ?? '';
-                    return Align(
+                    return Dismissible(
+                      key: ValueKey('dm-${m['id']}'),
+                      direction: DismissDirection.startToEnd,
+                      confirmDismiss: (_) async { setState(() => replyTo = Map<String,dynamic>.from(m)); return false; },
+                      child: Align(
                       alignment: mine
                           ? Alignment.centerRight
                           : Alignment.centerLeft,
@@ -2157,7 +2329,7 @@ class _ChatScreenState extends State<ChatScreen> {
                           color: mine ? const Color(0xffe8e8e8) : Colors.white,
                           borderRadius: BorderRadius.circular(17),
                         ),
-                        child: Column(
+                        child: GestureDetector(onLongPress: () => messageActions(Map<String,dynamic>.from(m)), child: Column(
                           crossAxisAlignment: CrossAxisAlignment.end,
                           children: [
                             if (!mine)
@@ -2168,6 +2340,8 @@ class _ChatScreenState extends State<ChatScreen> {
                                   style: TextStyle(fontSize: 11, color: brand),
                                 ),
                               ),
+                            if ((m['reply_to'] ?? '').toString().isNotEmpty)
+                              Align(alignment: Alignment.centerLeft, child: Text('↳ ${m['reply_to']}', maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 11, color: Colors.blueGrey))),
                             if ((m['message'] ?? '').toString().isNotEmpty)
                               Align(
                                 alignment: Alignment.centerLeft,
@@ -2179,16 +2353,16 @@ class _ChatScreenState extends State<ChatScreen> {
                             if (attachment.toString().isNotEmpty)
                               chatAttachment(attachment.toString(), mine),
                             Text(
-                              stamp(m['timestamp']),
+                              '${m['edited_at'] != null && m['edited_at'] != '' ? 'edited · ' : ''}${stamp(m['timestamp'])}${m['is_read'] == true ? '  ✓✓' : ''}',
                               style: TextStyle(
                                 fontSize: 10,
                                 color: Colors.black54,
                               ),
                             ),
                           ],
-                        ),
+                        )),
                       ),
-                    );
+                    ));
                   },
                 ),
         ),
@@ -2196,7 +2370,9 @@ class _ChatScreenState extends State<ChatScreen> {
           top: false,
           child: Padding(
             padding: const EdgeInsets.all(10),
-            child: Row(
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              if (replyTo != null) ListTile(dense: true, title: Text('Replying to ${replyTo!['sender'] ?? 'message'}', maxLines: 1), subtitle: Text('${replyTo!['message'] ?? ''}', maxLines: 1, overflow: TextOverflow.ellipsis), trailing: IconButton(onPressed: () => setState(() => replyTo = null), icon: const Icon(Icons.close))),
+              Row(
               children: [
                 IconButton(
                   tooltip: "Camera, files and location",
@@ -2237,7 +2413,8 @@ class _ChatScreenState extends State<ChatScreen> {
                   icon: const Icon(Icons.send),
                 ),
               ],
-            ),
+              ),
+            ]),
           ),
         ),
       ],
@@ -2451,6 +2628,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   List messages = [];
   List members = [];
   bool loading = true, sending = false;
+  Map? replyTo;
   final input = TextEditingController();
   final recorder = AudioRecorder();
   bool recording = false;
@@ -2484,7 +2662,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     input.clear();
     setState(() => sending = true);
     try {
-      await widget.api.post(path, {'message': t});
+      await widget.api.post(path, {'message': t, if (replyTo != null) 'reply_to_id': replyTo!['id']});
+      replyTo = null;
       await load();
     } catch (e) {
       input.text = t;
@@ -2492,6 +2671,39 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     } finally {
       if (mounted) setState(() => sending = false);
     }
+  }
+
+  Future<void> messageActions(Map m) async {
+    final action=await showModalBottomSheet<String>(context:context,builder:(sheet)=>SafeArea(child:Wrap(children:[
+      ListTile(leading:const Icon(Icons.reply),title:const Text('Reply'),onTap:()=>Navigator.pop(sheet,'reply')),
+      if(m['is_me']==true && (m['attachment']??'').toString().isEmpty && m['message']!='This message was deleted') ListTile(leading:const Icon(Icons.edit),title:const Text('Edit message'),onTap:()=>Navigator.pop(sheet,'edit')),
+      if(m['is_me']==true) ListTile(leading:const Icon(Icons.delete_outline),title:const Text('Delete message'),onTap:()=>Navigator.pop(sheet,'delete')),
+    ])));
+    if(!mounted||action==null)return;
+    if(action=='reply'){setState(()=>replyTo=m);return;}
+    final url='/api/mobile/groups/${widget.group['id']}/${m['id']}/';
+    try{
+      if(action=='delete')await widget.api.delete(url);
+      if(action=='edit'){
+        final edit=TextEditingController(text:(m['message']??'').toString());
+        final value=await showDialog<String>(context:context,builder:(ctx)=>AlertDialog(title:const Text('Edit message'),content:TextField(controller:edit,autofocus:true),actions:[TextButton(onPressed:()=>Navigator.pop(ctx),child:const Text('Cancel')),FilledButton(onPressed:()=>Navigator.pop(ctx,edit.text.trim()),child:const Text('Save'))]));
+        edit.dispose(); if(value==null||value.isEmpty)return; await widget.api.patch(url,{'message':value});
+      }
+      await load();
+    }catch(e){if(mounted)snack(context,errorText(e));}
+  }
+
+  Future<void> showGroupInfo() async {
+    final adminMembers=members.where((m)=>m['id']==widget.group['admin_id']).toList();
+    final adminName=adminMembers.isEmpty?'Not set':(adminMembers.first['full_name']??adminMembers.first['username']).toString();
+    await showModalBottomSheet<void>(context:context,isScrollControlled:true,builder:(sheet)=>SafeArea(child:DraggableScrollableSheet(expand:false,initialChildSize:.72,builder:(ctx,scroll)=>Column(children:[
+      Padding(padding:const EdgeInsets.all(14),child:Text(widget.group['name']??'Group information',style:Theme.of(ctx).textTheme.titleLarge)),
+      Expanded(child:ListView(controller:scroll,children:[
+        ListTile(leading:const Icon(Icons.groups),title:Text('${members.length} members'),subtitle:Text('Admin: $adminName')),
+        for(final member in members) ListTile(leading:UserAvatar(url:member['avatar']??'',username:member['username']??''),title:Text(member['full_name']??member['username']),subtitle:Text((member['bio']??'').toString(),maxLines:2,overflow:TextOverflow.ellipsis),trailing:member['id']==widget.group['admin_id']?const Chip(label:Text('Admin')):null),
+      ])),
+      Padding(padding:const EdgeInsets.all(12),child:OutlinedButton.icon(onPressed:()async{final confirm=await showDialog<bool>(context:ctx,builder:(c)=>AlertDialog(title:const Text('Leave group?'),content:const Text('You will stop receiving messages from this group.'),actions:[TextButton(onPressed:()=>Navigator.pop(c,false),child:const Text('Cancel')),FilledButton(onPressed:()=>Navigator.pop(c,true),child:const Text('Leave'))]));if(confirm==true){try{await widget.api.delete('/api/mobile/groups/${widget.group['id']}/leave/');if(mounted){Navigator.pop(sheet);Navigator.pop(context);}}catch(e){if(mounted)snack(context,errorText(e));}}},icon:const Icon(Icons.logout),label:const Text('Leave group'))),
+    ]))));
   }
 
   Future<void> sendMedia(
@@ -2612,6 +2824,22 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
               },
             ),
             ListTile(
+              leading: const Icon(Icons.photo_library_outlined),
+              title: const Text('Choose photo from gallery'),
+              onTap: () {
+                Navigator.pop(sheetContext);
+                ChatMediaTools.gallery(video: false).then((f) => sendMedia(f, photoEdit: true));
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.video_library_outlined),
+              title: const Text('Choose video from gallery'),
+              onTap: () {
+                Navigator.pop(sheetContext);
+                ChatMediaTools.gallery(video: true).then((f) => sendMedia(f, videoEdit: true));
+              },
+            ),
+            ListTile(
               leading: const Icon(Icons.attach_file),
               title: const Text('Choose file'),
               onTap: () {
@@ -2719,13 +2947,14 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   @override
   Widget build(BuildContext c) => Scaffold(
     appBar: AppBar(
-      title: Text(widget.group['name']),
+      title: InkWell(onTap:showGroupInfo,child:Text(widget.group['name'])),
       actions: [
-        IconButton(
+        if(widget.group['is_admin']==true) IconButton(
           tooltip: 'Add members',
           onPressed: addMembers,
           icon: const Icon(Icons.person_add_alt_1),
         ),
+        IconButton(tooltip:'Group information',onPressed:showGroupInfo,icon:const Icon(Icons.info_outline)),
       ],
     ),
     body: Column(
@@ -2739,7 +2968,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                   itemBuilder: (_, i) {
                     final m = messages[messages.length - 1 - i];
                     final mine = m['is_me'] == true;
-                    return Align(
+                    return Dismissible(key:ValueKey('gm-${m['id']}'),direction:DismissDirection.startToEnd,confirmDismiss:(_)async{setState(()=>replyTo=Map<String,dynamic>.from(m));return false;},child:Align(
                       alignment: mine
                           ? Alignment.centerRight
                           : Alignment.centerLeft,
@@ -2751,7 +2980,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                           color: mine ? const Color(0xffe8e8e8) : Colors.white,
                           borderRadius: BorderRadius.circular(16),
                         ),
-                        child: Column(
+                        child: GestureDetector(onLongPress:()=>messageActions(Map<String,dynamic>.from(m)),child:Column(
                           crossAxisAlignment: CrossAxisAlignment.end,
                           children: [
                             if (!mine)
@@ -2762,6 +2991,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                   fontWeight: FontWeight.bold,
                                 ),
                               ),
+                            if ((m['reply_to'] ?? '').toString().isNotEmpty)
+                              Align(alignment:Alignment.centerLeft,child:Text('↳ ${m['reply_to']}',maxLines:1,overflow:TextOverflow.ellipsis,style:const TextStyle(fontSize:11,color:Colors.blueGrey))),
                             Text(
                               m['message'] ?? '',
                               style: TextStyle(color: Colors.black87),
@@ -2776,16 +3007,18 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                               ),
                             ),
                           ],
-                        ),
+                        )),
                       ),
-                    );
+                    ));
                   },
                 ),
         ),
         SafeArea(
           child: Padding(
             padding: const EdgeInsets.all(10),
-            child: Row(
+            child: Column(mainAxisSize:MainAxisSize.min,children:[
+              if(replyTo!=null) ListTile(dense:true,title:Text('Replying to ${replyTo!['sender']??'message'}'),subtitle:Text('${replyTo!['message']??''}',maxLines:1,overflow:TextOverflow.ellipsis),trailing:IconButton(onPressed:()=>setState(()=>replyTo=null),icon:const Icon(Icons.close))),
+              Row(
               children: [
                 IconButton(
                   tooltip: "Camera, files and location",
@@ -2816,7 +3049,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                   icon: const Icon(Icons.send),
                 ),
               ],
-            ),
+              ),
+            ]),
           ),
         ),
       ],
@@ -3085,12 +3319,16 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
   Future<void> editProfile() async {
     final fields = [
+      'first_name',
+      'last_name',
       'bio',
       'home_address',
       'relationship_status',
       'education_status',
     ];
     final labels = [
+      'First name',
+      'Last name',
       'Bio',
       'Home address',
       'Relationship status',
@@ -3153,6 +3391,19 @@ class _ProfileScreenState extends State<ProfileScreen> {
     } catch (e) {
       if (mounted) snack(context, errorText(e));
     }
+  }
+
+  Future<void> editPrivacy() async {
+    String lastSeen=(profile['last_seen_privacy']??'everyone').toString();
+    String status=(profile['status_privacy']??'everyone').toString();
+    bool receipts=profile['read_receipts']!=false;
+    final result=await showDialog<Map<String,dynamic>>(context:context,builder:(ctx)=>StatefulBuilder(builder:(ctx,setDialog)=>AlertDialog(title:const Text('Privacy settings'),content:Column(mainAxisSize:MainAxisSize.min,children:[
+      DropdownButtonFormField<String>(value:lastSeen,decoration:const InputDecoration(labelText:'Last seen'),items:const [DropdownMenuItem(value:'everyone',child:Text('Everyone')),DropdownMenuItem(value:'followers',child:Text('Followers')),DropdownMenuItem(value:'nobody',child:Text('Nobody'))],onChanged:(v){if(v!=null)setDialog(()=>lastSeen=v);}),
+      DropdownButtonFormField<String>(value:status,decoration:const InputDecoration(labelText:'Status privacy'),items:const [DropdownMenuItem(value:'everyone',child:Text('Everyone')),DropdownMenuItem(value:'followers',child:Text('Followers')),DropdownMenuItem(value:'nobody',child:Text('Nobody'))],onChanged:(v){if(v!=null)setDialog(()=>status=v);}),
+      SwitchListTile(contentPadding:EdgeInsets.zero,title:const Text('Read receipts'),value:receipts,onChanged:(v)=>setDialog(()=>receipts=v)),
+    ]),actions:[TextButton(onPressed:()=>Navigator.pop(ctx),child:const Text('Cancel')),FilledButton(onPressed:()=>Navigator.pop(ctx,{'last_seen_privacy':lastSeen,'status_privacy':status,'read_receipts':receipts}),child:const Text('Save'))])));
+    if(result==null||!mounted)return;
+    try{await widget.api.post('/api/mobile/profile/${Uri.encodeComponent(username)}/',result);await load();}catch(e){if(mounted)snack(context,errorText(e));}
   }
 
   Future<void> changeAvatar() async {
@@ -3303,6 +3554,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 icon: const Icon(Icons.edit),
                 label: const Text('Edit profile details'),
               ),
+              OutlinedButton.icon(onPressed:editPrivacy,icon:const Icon(Icons.privacy_tip_outlined),label:const Text('Privacy settings')),
               OutlinedButton.icon(
                 onPressed: changePassword,
                 icon: const Icon(Icons.lock),

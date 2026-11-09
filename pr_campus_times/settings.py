@@ -41,6 +41,8 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'cloudinary_storage',
+    'cloudinary',
     'home',
     'memberss',
     'ckeditor', 
@@ -153,8 +155,22 @@ if os.environ.get('AWS_STORAGE_BUCKET_NAME'):
             'file_overwrite': False,
         },
     }
+cloudinary_config = {
+    'CLOUD_NAME': os.environ.get('CLOUDINARY_CLOUD_NAME', ''),
+    'API_KEY': os.environ.get('CLOUDINARY_API_KEY', ''),
+    'API_SECRET': os.environ.get('CLOUDINARY_API_SECRET', ''),
+}
+if os.environ.get('CLOUDINARY_URL') or all(cloudinary_config.values()):
+    CLOUDINARY_STORAGE = cloudinary_config
+    media_storage = {
+        'BACKEND': 'cloudinary_storage.storage.MediaCloudinaryStorage',
+        'OPTIONS': {'resource_type': 'auto'},
+    }
+else:
+    media_storage = default_storage
+
 STORAGES = {
-    'default': default_storage,
+    'default': media_storage,
     'staticfiles': {'BACKEND': 'whitenoise.storage.CompressedManifestStaticFilesStorage'},
 }
 MEDIA_URL = '/media/'

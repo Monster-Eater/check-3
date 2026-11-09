@@ -47,6 +47,7 @@ class Meep(models.Model):
     category = models.CharField(max_length= 255, default='Entertainment')
     title = models.CharField(max_length=255, default = 'No Title')
     attachment = models.FileField(upload_to='feed_attachments/', blank=True, null=True)
+    edited_at = models.DateTimeField(blank=True, null=True)
 
     def __str__(self):
         return self.title + ' | ' + str(self.user)
@@ -70,6 +71,7 @@ class Meep(models.Model):
            )
 
 class Profile(models.Model):
+    PRIVACY_CHOICES = [('everyone', 'Everyone'), ('followers', 'Followers'), ('nobody', 'Nobody')]
     user = models.OneToOneField(User, on_delete=models.CASCADE)
     follows = models.ManyToManyField("self", 
     related_name = "followed_by",
@@ -86,6 +88,9 @@ class Profile(models.Model):
     facebook_link = models.CharField(null=True, blank=True, max_length=200)
     instagram_link = models.CharField(null=True, blank=True, max_length=200)
     linkdin_link = models.CharField(null=True, blank=True, max_length=200)
+    last_seen_privacy = models.CharField(max_length=16, choices=PRIVACY_CHOICES, default='everyone')
+    status_privacy = models.CharField(max_length=16, choices=PRIVACY_CHOICES, default='everyone')
+    read_receipts = models.BooleanField(default=True)
 
     def __str__(self):
         return self.user.username
@@ -151,9 +156,12 @@ class Video(models.Model):
     
 class Comment(models.Model):
     post = models.ForeignKey(Meep, related_name="comments", on_delete= models.CASCADE )    
+    user = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL, related_name='social_comments')
+    parent = models.ForeignKey('self', null=True, blank=True, on_delete=models.CASCADE, related_name='replies')
     name = models.CharField(max_length= 255)
     body = models.TextField()
     date_added = models.DateField(auto_now_add= True)
+    updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
         return '%s - %s' % (self.post.title, self.name)

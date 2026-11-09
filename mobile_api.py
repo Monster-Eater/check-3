@@ -42,7 +42,7 @@ def payload(request):
     except (ValueError, UnicodeDecodeError): return None
 
 def media_url(request, field):
-    try: return request.build_absolute_uri(field.url) if field else ''
+    try: return request.build_absolute_uri(field.url) if field and request else (field.url if field else '')
     except (ValueError, AttributeError): return ''
 
 def notify(recipient, actor, kind, text, target=''):
@@ -58,7 +58,10 @@ def user_data(user, request=None):
             'relationship_status': profile.relationship_status if profile else '',
             'education_status': profile.education_status if profile else '',
             'avatar': media_url(request, profile.profile_image) if request and profile and profile.profile_image else '',
-            'is_staff': user.is_staff}
+            'is_staff': user.is_staff,
+            'last_seen_privacy': profile.last_seen_privacy if profile else 'everyone',
+            'status_privacy': profile.status_privacy if profile else 'everyone',
+            'read_receipts': profile.read_receipts if profile else True}
 
 def post_data(post, request, viewer):
     return {'id': post.id, 'username': post.user.username, 'user_id': post.user_id,
@@ -68,12 +71,18 @@ def post_data(post, request, viewer):
             'liked': post.likes.filter(pk=viewer.pk).exists(),
             'attachment': media_url(request, post.attachment),
             'attachment_name': post.attachment.name.rsplit('/',1)[-1] if post.attachment else '',
-            'comments_count': post.comments.count()}
+            'comments_count': post.comments.count(), 'is_mine': post.user_id == viewer.pk,
+            'edited_at': post.edited_at.isoformat() if post.edited_at else ''}
 
 def message_data(m, request, viewer):
+    other = m.receiver if m.sender_id == viewer.pk else m.sender
+    other_profile = Profile.objects.filter(user=other).first()
+    show_read = bool(other_profile is None or other_profile.read_receipts)
     return {'id': m.id, 'sender': m.sender.username, 'sender_id': m.sender_id, 'sender_avatar': user_data(m.sender, request)['avatar'],
-            'message': m.message or '', 'timestamp': m.timestamp.isoformat(),
-            'is_me': m.sender_id == viewer.pk, 'is_read': bool(getattr(m, 'read_at', None)),
+            'message': ('This message was deleted' if m.is_deleted else (m.message or '')), 'timestamp': m.timestamp.isoformat(),
+            'is_me': m.sender_id == viewer.pk, 'is_read': bool(m.read_at and m.sender_id == viewer.pk and show_read),
+            'edited_at': m.edited_at.isoformat() if m.edited_at else '', 'reply_to_id': m.reply_to_id,
+            'reply_to': m.reply_to.message if m.reply_to and not m.reply_to.is_deleted else '',
             'attachment': media_url(request, m.attachment), 'attachment_name': m.attachment.name.rsplit('/',1)[-1] if m.attachment else ''}
 
 @csrf_exempt
@@ -143,6 +152,9 @@ def mobile_me(request):
         request.user.save(update_fields=['first_name','last_name'])
         profile, _ = Profile.objects.get_or_create(user=request.user)
         profile.profile_bio = str(data.get('bio', profile.profile_bio or ''))[:500]
+        profile.last_seen_privacy = data.get('last_seen_privacy', profile.last_seen_privacy) if data.get('last_seen_privacy', profile.last_seen_privacy) in {'everyone','followers','nobody'} else profile.last_seen_privacy
+        profile.status_privacy = data.get('status_privacy', profile.status_privacy) if data.get('status_privacy', profile.status_privacy) in {'everyone','followers','nobody'} else profile.status_privacy
+        if 'read_receipts' in data: profile.read_receipts = str(data.get('read_receipts')).lower() in ('1','true','yes')
         if request.FILES.get('avatar'): profile.profile_image = request.FILES['avatar']
         profile.save()
     return JsonResponse({'user': user_data(request.user, request)})
@@ -164,6 +176,28 @@ def mobile_feed(request):
 
 @csrf_exempt
 @api_login_required
+@require_http_methods(['PATCH','DELETE'])
+def mobile_post_detail(request, post_id):
+    post = Meep.objects.filter(pk=post_id).first()
+    if not post: return JsonResponse({'error':'Post not found.'}, status=404)
+    if post.user_id != request.user.pk: return JsonResponse({'error':'You can only edit or delete your own post.'}, status=403)
+    if request.method == 'DELETE':
+        if post.attachment: post.attachment.delete(save=False)
+        post.delete()
+        return JsonResponse({'ok':True})
+    data = payload(request) or {}
+    if 'body' in data: post.body = str(data.get('body','')).strip()
+    if 'title' in data: post.title = str(data.get('title','')).strip()[:255]
+    attachment = request.FILES.get('attachment')
+    if attachment:
+        if attachment.size > MAX_UPLOAD: return JsonResponse({'error':'Maximum upload size is 25 MB.'}, status=413)
+        post.attachment = attachment
+    post.edited_at = timezone.now()
+    post.save()
+    return JsonResponse({'post':post_data(post,request,request.user)})
+
+@csrf_exempt
+@api_login_required
 @require_http_methods(['POST'])
 def mobile_like(request, post_id):
     post = Meep.objects.select_related('user').filter(pk=post_id).first()
@@ -182,10 +216,38 @@ def mobile_comments(request, post_id):
     if request.method == 'POST':
         data = payload(request) or {}; body = str(data.get('body','')).strip()
         if not body: return JsonResponse({'error':'Comment cannot be empty.'}, status=400)
-        comment = Comment.objects.create(post=post, name=request.user.username, body=body[:5000])
+        parent = None
+        if data.get('parent_id'):
+            parent = Comment.objects.filter(pk=data.get('parent_id'), post=post).first()
+            if not parent: return JsonResponse({'error':'Reply target not found.'}, status=404)
+        comment = Comment.objects.create(post=post, user=request.user, parent=parent, name=request.user.username, body=body[:5000])
         notify(post.user, request.user, 'comment', f'{request.user.username} commented on your post', f'/post/{post.id}')
-        return JsonResponse({'comment':{'id':comment.id,'username':comment.name,'body':comment.body,'created_at':comment.date_added.isoformat()}}, status=201)
-    return JsonResponse({'comments':[{'id':c.id,'username':c.name,'body':c.body,'created_at':c.date_added.isoformat()} for c in post.comments.order_by('date_added','id')]})
+        if parent and parent.user_id and parent.user_id != request.user.pk:
+            notify(parent.user, request.user, 'comment', f'{request.user.username} replied to your comment', f'/post/{post.id}')
+        return JsonResponse({'comment':comment_data(comment,request)}, status=201)
+    return JsonResponse({'comments':[comment_data(c,request) for c in post.comments.select_related('user','parent').order_by('date_added','id')]})
+
+def comment_data(comment, request):
+    return {'id':comment.id,'username':comment.name,'user_id':comment.user_id,'body':comment.body,
+            'created_at':comment.date_added.isoformat(),'parent_id':comment.parent_id,
+            'parent_username':comment.parent.name if comment.parent else '',
+            'is_mine':comment.user_id == request.user.pk}
+
+@csrf_exempt
+@api_login_required
+@require_http_methods(['PATCH','DELETE'])
+def mobile_comment_detail(request, post_id, comment_id):
+    comment=Comment.objects.filter(pk=comment_id,post_id=post_id).first()
+    if not comment:return JsonResponse({'error':'Comment not found.'},status=404)
+    if comment.user_id != request.user.pk and comment.post.user_id != request.user.pk:
+        return JsonResponse({'error':'Only the comment author or post owner can remove it.'},status=403)
+    if request.method=='DELETE':
+        comment.delete(); return JsonResponse({'ok':True})
+    if comment.user_id != request.user.pk:return JsonResponse({'error':'You can only edit your own comment.'},status=403)
+    data=payload(request) or {}; body=str(data.get('body','')).strip()
+    if not body:return JsonResponse({'error':'Comment cannot be empty.'},status=400)
+    comment.body=body[:5000]; comment.save(update_fields=['body','updated_at'])
+    return JsonResponse({'comment':comment_data(comment,request)})
 
 @csrf_exempt
 @api_login_required
@@ -196,10 +258,12 @@ def mobile_contacts(request):
     if q: users = users.filter(Q(username__icontains=q)|Q(first_name__icontains=q)|Q(last_name__icontains=q))
     result=[]
     for person in users.order_by('username')[:150]:
-        last=Message.objects.filter(Q(sender=request.user,receiver=person)|Q(sender=person,receiver=request.user)).order_by('-timestamp').first()
-        unread=Message.objects.filter(sender=person,receiver=request.user,read_at__isnull=True).count()
+        last=Message.objects.filter(Q(sender=request.user,receiver=person)|Q(sender=person,receiver=request.user)).exclude(hidden_for=request.user).order_by('-timestamp').first()
+        unread=Message.objects.filter(sender=person,receiver=request.user,read_at__isnull=True).exclude(hidden_for=request.user).count()
         presence=ChatPresence.objects.filter(user=person).first()
-        result.append({**user_data(person,request),'last_message':(last.message if last else '') or ('Attachment' if last and last.attachment else ''), 'last_message_at':last.timestamp.isoformat() if last else '', 'unread':unread,'online':bool(presence and presence.last_seen >= timezone.now()-timedelta(seconds=45))})
+        target_profile=Profile.objects.filter(user=person).first()
+        can_see=(not target_profile or target_profile.last_seen_privacy=='everyone' or (target_profile.last_seen_privacy=='followers' and Profile.objects.filter(user=person,followed_by__user=request.user).exists()))
+        result.append({**user_data(person,request),'last_message':(last.message if last else '') or ('Attachment' if last and last.attachment else ''), 'last_message_at':last.timestamp.isoformat() if last else '', 'unread':unread,'online':bool(can_see and presence and presence.last_seen >= timezone.now()-timedelta(seconds=45))})
     return JsonResponse({'people':result})
 
 @csrf_exempt
@@ -213,18 +277,92 @@ def mobile_chat(request, username):
         data=payload(request) or {}; text=str(data.get('message','')).strip(); file=request.FILES.get('attachment')
         if not text and not file: return JsonResponse({'error':'Write a message or attach a file.'},status=400)
         if file and file.size>MAX_UPLOAD: return JsonResponse({'error':'Maximum upload size is 25 MB.'},status=413)
-        sent=Message.objects.create(sender=request.user,receiver=other,message=text,attachment=file)
+        reply_to=Message.objects.filter(pk=data.get('reply_to_id'),sender__in=[request.user,other],receiver__in=[request.user,other]).first() if data.get('reply_to_id') else None
+        sent=Message.objects.create(sender=request.user,receiver=other,message=text,attachment=file,reply_to=reply_to)
         notify(other,request.user,'message',f'New message from {request.user.username}',f'/chat/{request.user.username}')
         return JsonResponse({'message':message_data(sent,request,request.user)},status=201)
     now=timezone.now()
-    Message.objects.filter(sender=other,receiver=request.user,read_at__isnull=True).update(read_at=now)
+    viewer_profile,_=Profile.objects.get_or_create(user=request.user)
+    if viewer_profile.read_receipts:
+        Message.objects.filter(sender=other,receiver=request.user,read_at__isnull=True).update(read_at=now)
     ChatPresence.objects.update_or_create(user=request.user,defaults={'last_seen':now})
-    qs=Message.objects.filter(Q(sender=request.user,receiver=other)|Q(sender=other,receiver=request.user)).select_related('sender').order_by('-timestamp','-id')[:300]
+    qs=Message.objects.filter(Q(sender=request.user,receiver=other)|Q(sender=other,receiver=request.user)).exclude(hidden_for=request.user).select_related('sender','receiver','reply_to').order_by('-timestamp','-id')[:300]
     msgs=[message_data(m,request,request.user) for m in list(qs)[::-1]]
     p=ChatPresence.objects.filter(user=other).first()
-    online=bool(p and p.last_seen>=now-timedelta(seconds=45))
+    other_profile=Profile.objects.filter(user=other).first()
+    can_see_presence=(not other_profile or other_profile.last_seen_privacy=='everyone' or (other_profile.last_seen_privacy=='followers' and Profile.objects.filter(user=other,followed_by__user=request.user).exists()))
+    online=bool(can_see_presence and p and p.last_seen>=now-timedelta(seconds=45))
     typing=bool(p and p.typing_to_id==request.user.id and p.typing_until and p.typing_until>=now)
-    return JsonResponse({'person':user_data(other,request),'messages':msgs,'online':online,'typing':typing,'last_seen':p.last_seen.isoformat() if p and not online else ''})
+    return JsonResponse({'person':user_data(other,request),'messages':msgs,'online':online,'typing':typing and can_see_presence,'last_seen':p.last_seen.isoformat() if p and not online and can_see_presence else ''})
+
+@csrf_exempt
+@api_login_required
+@require_http_methods(['PATCH','DELETE'])
+def mobile_message_detail(request, username, message_id):
+    other=User.objects.filter(username=username,is_active=True).first()
+    message=Message.objects.filter(pk=message_id,sender=request.user,receiver=other).first() if other else None
+    if not message:return JsonResponse({'error':'Message not found or not yours to edit.'},status=404)
+    if request.method=='DELETE':
+        if message.attachment: message.attachment.delete(save=False)
+        message.message=''; message.is_deleted=True; message.save(update_fields=['message','is_deleted'])
+        return JsonResponse({'ok':True})
+    data=payload(request) or {}; message.message=str(data.get('message','')).strip()
+    if not message.message and not message.attachment:return JsonResponse({'error':'A message cannot be empty.'},status=400)
+    message.edited_at=timezone.now(); message.save(update_fields=['message','edited_at'])
+    return JsonResponse({'message':message_data(message,request,request.user)})
+
+@csrf_exempt
+@api_login_required
+@require_http_methods(['DELETE'])
+def mobile_clear_chat(request, username):
+    other=User.objects.filter(username=username,is_active=True).first()
+    if not other:return JsonResponse({'error':'Person not found.'},status=404)
+    for message in Message.objects.filter(Q(sender=request.user,receiver=other)|Q(sender=other,receiver=request.user)).exclude(hidden_for=request.user):
+        message.hidden_for.add(request.user)
+    return JsonResponse({'ok':True})
+
+@csrf_exempt
+@api_login_required
+@require_http_methods(['PATCH','DELETE'])
+def mobile_group_message_detail(request, group_id, message_id):
+    group=Group.objects.filter(pk=group_id,members=request.user).first()
+    message=GroupMessage.objects.filter(pk=message_id,group=group,sender=request.user).first() if group else None
+    if not message:return JsonResponse({'error':'Message not found or not yours to edit.'},status=404)
+    if request.method=='DELETE':
+        if message.attachment: message.attachment.delete(save=False)
+        message.message=''; message.is_deleted=True; message.save(update_fields=['message','is_deleted'])
+        return JsonResponse({'ok':True})
+    data=payload(request) or {}; message.message=str(data.get('message','')).strip()
+    if not message.message and not message.attachment:return JsonResponse({'error':'A message cannot be empty.'},status=400)
+    message.edited_at=timezone.now(); message.save(update_fields=['message','edited_at'])
+    return JsonResponse({'ok':True})
+
+@csrf_exempt
+@api_login_required
+@require_http_methods(['DELETE'])
+def mobile_group_leave(request, group_id):
+    group=Group.objects.filter(pk=group_id,members=request.user).first()
+    if not group:return JsonResponse({'error':'Group not found.'},status=404)
+    remaining=list(group.members.exclude(pk=request.user.pk).order_by('id'))
+    if group.admin_id==request.user.pk and remaining:
+        group.admin=remaining[0]; group.save(update_fields=['admin'])
+    group.members.remove(request.user)
+    if not remaining: group.delete()
+    return JsonResponse({'ok':True})
+
+@csrf_exempt
+@api_login_required
+@require_http_methods(['POST'])
+def mobile_group_promote(request, group_id):
+    group=Group.objects.filter(pk=group_id,members=request.user).first()
+    if not group:return JsonResponse({'error':'Group not found.'},status=404)
+    if group.admin_id!=request.user.pk:return JsonResponse({'error':'Only the group admin can promote members.'},status=403)
+    target_id=(payload(request) or {}).get('user_id')
+    target=User.objects.filter(pk=target_id,chat_groups=group).first()
+    if not target:return JsonResponse({'error':'Member not found.'},status=404)
+    # The current schema supports one admin; the original admin stays in charge.
+    group.admin=target; group.save(update_fields=['admin'])
+    return JsonResponse({'group':group_data(group,request.user)})
 
 @csrf_exempt
 @api_login_required
@@ -246,7 +384,7 @@ def mobile_groups(request):
     if request.method=='POST':
         data=payload(request) or {}; name=str(data.get('name','')).strip()[:100]
         if not name:return JsonResponse({'error':'Group name is required.'},status=400)
-        group=Group.objects.create(name=name); group.members.add(request.user)
+        group=Group.objects.create(name=name,admin=request.user); group.members.add(request.user)
         ids=data.get('member_ids',[])
         if isinstance(ids,list): group.members.add(*User.objects.filter(id__in=ids,is_active=True))
         return JsonResponse({'group':group_data(group,request.user)},status=201)
@@ -255,7 +393,7 @@ def mobile_groups(request):
 
 def group_data(group,user):
     last=group.messages.order_by('-timestamp').first()
-    return {'id':group.id,'name':group.name,'member_count':group.members.count(),'last_message':(last.message or 'Attachment') if last else '', 'last_message_at':last.timestamp.isoformat() if last else ''}
+    return {'id':group.id,'name':group.name,'icon':media_url(None,group.icon),'admin_id':group.admin_id,'is_admin':group.admin_id==user.pk,'member_count':group.members.count(),'last_message':(last.message or 'Attachment') if last else '', 'last_message_at':last.timestamp.isoformat() if last else ''}
 
 @csrf_exempt
 @api_login_required
@@ -267,11 +405,12 @@ def mobile_group_chat(request, group_id):
         data=payload(request) or {}; text=str(data.get('message','')).strip(); file=request.FILES.get('attachment')
         if not text and not file:return JsonResponse({'error':'Write a message or attach a file.'},status=400)
         if file and file.size>MAX_UPLOAD:return JsonResponse({'error':'Maximum upload size is 25 MB.'},status=413)
-        msg=GroupMessage.objects.create(group=group,sender=request.user,message=text,attachment=file)
+        reply_to=GroupMessage.objects.filter(pk=data.get('reply_to_id'),group=group).first() if data.get('reply_to_id') else None
+        msg=GroupMessage.objects.create(group=group,sender=request.user,message=text,attachment=file,reply_to=reply_to)
         for member in group.members.exclude(pk=request.user.pk): notify(member,request.user,'group',f'New message in {group.name}',f'/groups/{group.id}')
         return JsonResponse({'message':{'id':msg.id,'sender':msg.sender.username,'sender_id':msg.sender_id,'message':msg.message or '', 'timestamp':msg.timestamp.isoformat(),'is_me':True,'attachment':media_url(request,msg.attachment)}},status=201)
-    qs=group.messages.select_related('sender').order_by('-timestamp')[:300]
-    data=[{'id':m.id,'sender':m.sender.username,'sender_id':m.sender_id,'message':m.message or '', 'timestamp':m.timestamp.isoformat(),'is_me':m.sender_id==request.user.pk,'attachment':media_url(request,m.attachment)} for m in list(qs)[::-1]]
+    qs=group.messages.select_related('sender','reply_to').order_by('-timestamp')[:300]
+    data=[{'id':m.id,'sender':m.sender.username,'sender_id':m.sender_id,'message':'This message was deleted' if m.is_deleted else (m.message or ''), 'timestamp':m.timestamp.isoformat(),'is_me':m.sender_id==request.user.pk,'attachment':media_url(request,m.attachment),'edited_at':m.edited_at.isoformat() if m.edited_at else '', 'reply_to_id':m.reply_to_id,'reply_to':m.reply_to.message if m.reply_to and not m.reply_to.is_deleted else ''} for m in list(qs)[::-1]]
     return JsonResponse({'group':group_data(group,request.user),'members':[user_data(u,request) for u in group.members.all()],'messages':data})
 
 @csrf_exempt
@@ -282,6 +421,7 @@ def mobile_group_members(request, group_id):
     if not group:return JsonResponse({'error':'Group not found.'},status=404)
     data=payload(request) or {}; ids=data.get('member_ids',[])
     if not isinstance(ids,list):return JsonResponse({'error':'member_ids must be a list.'},status=400)
+    if group.admin_id != request.user.pk:return JsonResponse({'error':'Only a group admin can add members.'},status=403)
     group.members.add(*User.objects.filter(id__in=ids,is_active=True))
     return JsonResponse({'group':group_data(group,request.user)})
 
@@ -306,6 +446,12 @@ def status_data(status, request):
             'view_count': views.count() if own else None,
             'viewers': [{'username': v.user.username, 'viewed_at': v.viewed_at.isoformat()} for v in views] if own else []}
 
+def status_visible_to(status, viewer):
+    if status.user_id == viewer.pk: return True
+    profile=Profile.objects.filter(user=status.user).first()
+    privacy=profile.status_privacy if profile else 'everyone'
+    return privacy=='everyone' or (privacy=='followers' and Profile.objects.filter(user=status.user,followed_by__user=viewer).exists())
+
 @csrf_exempt
 @api_login_required
 @require_http_methods(['GET','POST'])
@@ -326,7 +472,8 @@ def mobile_status(request):
         st = StatusUpdate.objects.create(user=request.user, text=text, media=file)
         return JsonResponse({'status': status_data(st, request)}, status=201)
     statuses = StatusUpdate.objects.filter(created_at__gt=now-timedelta(hours=24)).select_related('user').order_by('created_at')
-    return JsonResponse({'statuses': [status_data(s, request) for s in statuses]})
+    visible=[status for status in statuses if status_visible_to(status,request.user)]
+    return JsonResponse({'statuses': [status_data(s, request) for s in visible]})
 
 @csrf_exempt
 @api_login_required
@@ -341,6 +488,8 @@ def mobile_status_detail(request, status_id):
         status.media.delete(save=False)
         status.delete()
         return JsonResponse({'ok': True})
+    if not status_visible_to(status,request.user):
+        return JsonResponse({'error':'This status is private.'},status=404)
     if status.user_id != request.user.id:
         StatusView.objects.get_or_create(status=status, user=request.user)
     return JsonResponse({'status': status_data(status, request)})
@@ -366,9 +515,15 @@ def mobile_profile(request, username):
     if request.method=='POST':
         data=payload(request) or {}
         if person.pk != request.user.pk:return JsonResponse({'error':'You can only edit your own profile.'},status=403)
+        if 'first_name' in data: person.first_name=str(data.get('first_name',''))[:150]
+        if 'last_name' in data: person.last_name=str(data.get('last_name',''))[:150]
+        if 'first_name' in data or 'last_name' in data: person.save(update_fields=['first_name','last_name'])
         profile.profile_bio=str(data.get('bio',profile.profile_bio or ''))[:500]
         for field, limit in [('home_address',300),('relationship_status',80),('education_status',300)]:
             if field in data: setattr(profile, field, str(data[field])[:limit])
+        if data.get('last_seen_privacy') in {'everyone','followers','nobody'}: profile.last_seen_privacy=data['last_seen_privacy']
+        if data.get('status_privacy') in {'everyone','followers','nobody'}: profile.status_privacy=data['status_privacy']
+        if 'read_receipts' in data: profile.read_receipts=str(data['read_receipts']).lower() in ('1','true','yes')
         avatar = request.FILES.get('avatar')
         if avatar:
             try:
