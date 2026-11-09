@@ -20,3 +20,11 @@ media/complaints/
 build/
 *.apk
 .DS_Store
+.venv/
+__pycache__/
+*.pyc
+db.sqlite3
+.env
+media/
+.venv311/
+.venv*/
