@@ -273,8 +273,8 @@ class ChatMediaTools {
 }
 
 Widget chatAttachment(String url, bool mine) {
-  final path = Uri.tryParse(url)?.path.toLowerCase() ?? '';
-  final isImage = ['.png', '.jpg', '.jpeg', '.gif', '.webp'].any(path.endsWith);
+   final path = (Uri.tryParse(url)?.path.toLowerCase() ?? url.toLowerCase()).split('?').first;
+  final isImage = path.contains('.png') || path.contains('.jpg') || path.contains('.jpeg') || path.contains('.gif') || path.contains('.webp') || path.contains('/image/') || path.contains('image/upload');
   if (isImage)
     return InkWell(
       onTap: () => launchExternal(url),
@@ -289,9 +289,8 @@ Widget chatAttachment(String url, bool mine) {
         ),
       ),
     );
-  final isAudio = ['.webm', '.m4a', '.mp3', '.wav', '.ogg'].any(path.endsWith);
-  final isVideo =
-      ['.mp4', '.mov', '.mkv', '.webm'].any(path.endsWith) && !isAudio;
+    final isAudio = path.contains('.m4a') || path.contains('.mp3') || path.contains('.wav') || path.contains('.ogg') || path.contains('/audio/') || path.contains('audio/upload');
+    final isVideo = (path.contains('.mp4') || path.contains('.mov') || path.contains('.mkv') || path.contains('.webm') || path.contains('/video/') || path.contains('video/upload')) && !isAudio;
   if (isAudio) return InlineAudioPlayer(url: url);
   if (isVideo) return InlineVideoPlayer(url: url);
   return TextButton.icon(
