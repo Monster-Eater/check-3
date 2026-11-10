@@ -272,12 +272,33 @@ class ChatMediaTools {
   }
 }
 
-Widget chatAttachment(String url, bool mine) {
-   final path = (Uri.tryParse(url)?.path.toLowerCase() ?? url.toLowerCase()).split('?').first;
-  final isImage = path.contains('.png') || path.contains('.jpg') || path.contains('.jpeg') || path.contains('.gif') || path.contains('.webp') || path.contains('/image/') || path.contains('image/upload');
+String normalizedMediaPath(String value) {
+  final uri=Uri.tryParse(value);
+  final path=uri?.path ?? value.split('?').first;
+  try{return Uri.decodeComponent(path).toLowerCase();}catch(_){return path.toLowerCase();}
+}
+
+bool isImageMedia(String url, [String filename='']) {
+  final path=normalizedMediaPath(url);
+  final name=normalizedMediaPath(filename);
+  return ['.png','.jpg','.jpeg','.gif','.webp','.bmp','.heic','.heif'].any((ext)=>path.endsWith(ext)||name.endsWith(ext)) ||
+      path.contains('/image/upload/') || path.contains('/image/fetch/');
+}
+
+bool isVideoMedia(String url, [String filename='']) {
+  final path=normalizedMediaPath(url);
+  final name=normalizedMediaPath(filename);
+  return ['.mp4','.mov','.mkv','.webm','.m4v','.avi'].any((ext)=>path.endsWith(ext)||name.endsWith(ext)) ||
+      path.contains('/video/upload/') || path.contains('/video/fetch/');
+}
+
+Widget chatAttachment(BuildContext context, String url, bool mine, {String filename=''}) {
+  final path = normalizedMediaPath(url);
+  final name = normalizedMediaPath(filename);
+  final isImage = isImageMedia(url, filename);
   if (isImage)
     return InkWell(
-      onTap: () => launchExternal(url),
+      onTap: () => showDialog<void>(context:context,builder:(dialogContext)=>Dialog(child:Stack(children:[InteractiveViewer(minScale:.5,maxScale:5,child:Image.network(url,fit:BoxFit.contain,errorBuilder:(_,__,___)=>const Center(child:Text('Image unavailable')))),Positioned(right:4,top:4,child:IconButton(onPressed:()=>Navigator.pop(dialogContext),icon:const Icon(Icons.close)))]))),
       child: ClipRRect(
         borderRadius: BorderRadius.circular(10),
         child: Image.network(
@@ -289,8 +310,8 @@ Widget chatAttachment(String url, bool mine) {
         ),
       ),
     );
-    final isAudio = path.contains('.m4a') || path.contains('.mp3') || path.contains('.wav') || path.contains('.ogg') || path.contains('/audio/') || path.contains('audio/upload');
-    final isVideo = (path.contains('.mp4') || path.contains('.mov') || path.contains('.mkv') || path.contains('.webm') || path.contains('/video/') || path.contains('video/upload')) && !isAudio;
+  final isAudio = ['.webm', '.m4a', '.mp3', '.wav', '.ogg', '.aac', '.opus'].any((ext)=>path.endsWith(ext)||name.endsWith(ext));
+  final isVideo = isVideoMedia(url, filename) && !isAudio;
   if (isAudio) return InlineAudioPlayer(url: url);
   if (isVideo) return InlineVideoPlayer(url: url);
   return TextButton.icon(
@@ -379,10 +400,11 @@ class _InlineAudioPlayerState extends State<InlineAudioPlayer> {
           ),
         ),
         if (error != null)
-          IconButton(
-            tooltip: error!,
-            onPressed: () => launchExternal(widget.url),
-            icon: const Icon(Icons.open_in_new),
+          Flexible(
+            child: Text(
+              error!,
+              style: const TextStyle(fontSize: 12, color: Colors.redAccent),
+            ),
           ),
       ],
     ),
@@ -424,10 +446,9 @@ class _InlineVideoPlayerState extends State<InlineVideoPlayer> {
   @override
   Widget build(BuildContext context) {
     if (failed)
-      return TextButton.icon(
-        onPressed: () => launchExternal(widget.url),
-        icon: const Icon(Icons.open_in_new),
-        label: const Text('Open video'),
+      return const Padding(
+        padding: EdgeInsets.all(12),
+        child: Text('Video unavailable. Check the media URL and try again.'),
       );
     if (!player.value.isInitialized)
       return const SizedBox(
@@ -656,6 +677,23 @@ class CampusApi {
     token=next.toString(); activeUsername=username;
     await prefs.setString('api_token',token!); await prefs.setString('active_username',username);
     await get('/api/mobile/me/');
+  }
+
+  Future<void> updateActiveUsername(String username) async {
+    final oldUsername = activeUsername;
+    final prefs = await prefsFuture;
+    final raw = prefs.getString('saved_accounts') ?? '{}';
+    Map<String, dynamic> accounts = {};
+    try {
+      accounts = Map<String, dynamic>.from(jsonDecode(raw) as Map);
+    } catch (_) {}
+    if (oldUsername != null && oldUsername != username) {
+      accounts.remove(oldUsername);
+    }
+    if (token != null) accounts[username] = token;
+    activeUsername = username;
+    await prefs.setString('saved_accounts', jsonEncode(accounts));
+    await prefs.setString('active_username', username);
   }
 
   Future<void> signOut() async {
@@ -1615,7 +1653,7 @@ class PostCard extends StatelessWidget {
                 padding: const EdgeInsets.only(top: 12),
                 child: ClipRRect(
                   borderRadius: BorderRadius.circular(12),
-                  child: SocialMediaView(url: attachment),
+                  child: SocialMediaView(url: attachment, filename: (post['attachment_name']??'').toString()),
                 ),
               ),
             const Divider(height: 22),
@@ -2033,7 +2071,7 @@ class _ChatScreenState extends State<ChatScreen> {
   Future<void> messageActions(Map m) async {
     final action = await showModalBottomSheet<String>(context: context, builder: (sheet) => SafeArea(child: Wrap(children: [
       ListTile(leading: const Icon(Icons.reply), title: const Text('Reply'), onTap: () => Navigator.pop(sheet, 'reply')),
-      if (m['is_me'] == true && (m['attachment'] ?? '').toString().isEmpty && m['message'] != 'This message was deleted')
+      if (m['is_me'] == true && m['message'] != 'This message was deleted')
         ListTile(leading: const Icon(Icons.edit), title: const Text('Edit message'), onTap: () => Navigator.pop(sheet, 'edit')),
       if (m['is_me'] == true) ListTile(leading: const Icon(Icons.delete_outline), title: const Text('Delete message'), onTap: () => Navigator.pop(sheet, 'delete')),
     ])));
@@ -2350,7 +2388,7 @@ class _ChatScreenState extends State<ChatScreen> {
                                 ),
                               ),
                             if (attachment.toString().isNotEmpty)
-                              chatAttachment(attachment.toString(), mine),
+                              chatAttachment(context, attachment.toString(), mine, filename: (m['attachment_name']??'').toString()),
                             Text(
                               '${m['edited_at'] != null && m['edited_at'] != '' ? 'edited · ' : ''}${stamp(m['timestamp'])}${m['is_read'] == true ? '  ✓✓' : ''}',
                               style: TextStyle(
@@ -2675,7 +2713,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   Future<void> messageActions(Map m) async {
     final action=await showModalBottomSheet<String>(context:context,builder:(sheet)=>SafeArea(child:Wrap(children:[
       ListTile(leading:const Icon(Icons.reply),title:const Text('Reply'),onTap:()=>Navigator.pop(sheet,'reply')),
-      if(m['is_me']==true && (m['attachment']??'').toString().isEmpty && m['message']!='This message was deleted') ListTile(leading:const Icon(Icons.edit),title:const Text('Edit message'),onTap:()=>Navigator.pop(sheet,'edit')),
+      if(m['is_me']==true && m['message']!='This message was deleted') ListTile(leading:const Icon(Icons.edit),title:const Text('Edit message'),onTap:()=>Navigator.pop(sheet,'edit')),
       if(m['is_me']==true) ListTile(leading:const Icon(Icons.delete_outline),title:const Text('Delete message'),onTap:()=>Navigator.pop(sheet,'delete')),
     ])));
     if(!mounted||action==null)return;
@@ -2946,7 +2984,21 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   @override
   Widget build(BuildContext c) => Scaffold(
     appBar: AppBar(
-      title: InkWell(onTap:showGroupInfo,child:Text(widget.group['name'])),
+      title: InkWell(
+        onTap: showGroupInfo,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            UserAvatar(
+              url: (widget.group['icon'] ?? '').toString(),
+              username: (widget.group['name'] ?? 'Group').toString(),
+              radius: 18,
+            ),
+            const SizedBox(width: 10),
+            Flexible(child: Text(widget.group['name'] ?? 'Group')),
+          ],
+        ),
+      ),
       actions: [
         if(widget.group['is_admin']==true) IconButton(
           tooltip: 'Add members',
@@ -2997,7 +3049,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                               style: TextStyle(color: Colors.black87),
                             ),
                             if ((m['attachment'] ?? '').toString().isNotEmpty)
-                              chatAttachment(m['attachment'].toString(), mine),
+                              chatAttachment(context, m['attachment'].toString(), mine, filename: (m['attachment_name']??'').toString()),
                             Text(
                               stamp(m['timestamp']),
                               style: TextStyle(
@@ -3318,6 +3370,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
   Future<void> editProfile() async {
     final fields = [
+      'username',
       'first_name',
       'last_name',
       'bio',
@@ -3326,6 +3379,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
       'education_status',
     ];
     final labels = [
+      'Username / ID name',
       'First name',
       'Last name',
       'Bio',
@@ -3386,6 +3440,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
         '/api/mobile/profile/${Uri.encodeComponent(username)}/',
         result,
       );
+      final newUsername = (result['username'] ?? '').trim();
+      if (newUsername.isNotEmpty && newUsername != username) {
+        username = newUsername;
+        await widget.api.updateActiveUsername(newUsername);
+      }
       await load();
     } catch (e) {
       if (mounted) snack(context, errorText(e));

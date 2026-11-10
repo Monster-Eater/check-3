@@ -58,37 +58,57 @@ class UserAvatar extends StatelessWidget {
   );
 }
 
-bool socialVideo(String name) => [
-  '.mp4',
-  '.mov',
-  '.webm',
-  '.m4v',
-].any((ext) => (Uri.tryParse(name)?.path ?? name).toLowerCase().endsWith(ext));
-bool socialPhoto(String name) => [
-  '.jpg',
-  '.jpeg',
-  '.png',
-  '.gif',
-  '.webp',
-].any((ext) => (Uri.tryParse(name)?.path ?? name).toLowerCase().endsWith(ext));
+bool socialVideo(String name, [String filename='']) => isVideoMedia(name,filename);
+bool socialPhoto(String name, [String filename='']) => isImageMedia(name,filename);
 
 class SocialMediaView extends StatelessWidget {
-  const SocialMediaView({super.key, required this.url});
+  const SocialMediaView({super.key, required this.url, this.filename=''});
   final String url;
+  final String filename;
   @override
   Widget build(BuildContext context) {
-    if (socialVideo(url))
+    if (socialVideo(url,filename))
       return Center(
         child: InlineVideoPlayer(key: ValueKey(url), url: url),
       );
-    if (socialPhoto(url))
-      return Image.network(
-        url,
-        width: double.infinity,
-        fit: BoxFit.contain,
-        errorBuilder: (_, __, ___) => const Padding(
-          padding: EdgeInsets.all(24),
-          child: Text('Photo unavailable'),
+    if (socialPhoto(url,filename))
+      return InkWell(
+        onTap: () => showDialog<void>(
+          context: context,
+          builder: (dialogContext) => Dialog(
+            child: Stack(
+              children: [
+                InteractiveViewer(
+                  minScale: .5,
+                  maxScale: 5,
+                  child: Image.network(
+                    url,
+                    fit: BoxFit.contain,
+                    errorBuilder: (_, __, ___) => const Center(
+                      child: Text('Photo unavailable'),
+                    ),
+                  ),
+                ),
+                Positioned(
+                  right: 4,
+                  top: 4,
+                  child: IconButton(
+                    onPressed: () => Navigator.pop(dialogContext),
+                    icon: const Icon(Icons.close),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        child: Image.network(
+          url,
+          width: double.infinity,
+          fit: BoxFit.contain,
+          errorBuilder: (_, __, ___) => const Padding(
+            padding: EdgeInsets.all(24),
+            child: Text('Photo unavailable'),
+          ),
         ),
       );
     return TextButton.icon(
@@ -765,7 +785,11 @@ class _StatusViewerState extends State<StatusViewer> {
                     Text(stamp(s['created_at'])),
                     const SizedBox(height: 16),
                     if ((s['media'] ?? '').isNotEmpty)
-                      SocialMediaView(key: ValueKey(s['id']), url: s['media']),
+                      SocialMediaView(
+                        key: ValueKey(s['id']),
+                        url: s['media'],
+                        filename: (s['media_name'] ?? '').toString(),
+                      ),
                     if ((s['text'] ?? '').isNotEmpty)
                       Padding(
                         padding: const EdgeInsets.all(20),

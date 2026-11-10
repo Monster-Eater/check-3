@@ -163,8 +163,7 @@ cloudinary_config = {
 if os.environ.get('CLOUDINARY_URL') or all(cloudinary_config.values()):
     CLOUDINARY_STORAGE = cloudinary_config
     media_storage = {
-        'BACKEND': 'cloudinary_storage.storage.MediaCloudinaryStorage',
-        'OPTIONS': {'resource_type': 'auto'},
+        'BACKEND': 'cloudinary_media_storage.AutoResourceCloudinaryStorage',
     }
 else:
     media_storage = default_storage

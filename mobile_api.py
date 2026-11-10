@@ -1,5 +1,5 @@
 """Authenticated JSON/multipart API for Campus Times Flutter clients."""
-import hashlib, json, secrets
+import hashlib, json, secrets, logging
 from datetime import timedelta
 from functools import wraps
 from django.contrib.auth import authenticate
@@ -19,6 +19,7 @@ from chat.models import (Message, MobileAPIToken, Group, GroupMessage,
 from home.models import Meep, Comment, Profile, Complaint, Video
 
 MAX_UPLOAD = 25 * 1024 * 1024
+logger = logging.getLogger(__name__)
 
 def api_login_required(view):
     @wraps(view)
@@ -32,6 +33,12 @@ def api_login_required(view):
                 request.user = token.user
         if not getattr(request, 'user', None) or not request.user.is_authenticated:
             return JsonResponse({'error': 'Your session expired. Please sign in again.'}, status=401)
+        # Keep last-seen current throughout the signed-in app, not only while
+        # a user happens to have a conversation open.
+        ChatPresence.objects.update_or_create(
+            user=request.user,
+            defaults={'last_seen': timezone.now()},
+        )
         return view(request, *args, **kwargs)
     return wrapped
 
@@ -41,9 +48,42 @@ def payload(request):
     try: return json.loads(request.body or '{}')
     except (ValueError, UnicodeDecodeError): return None
 
-def media_url(request, field):
-    try: return request.build_absolute_uri(field.url) if field and request else (field.url if field else '')
-    except (ValueError, AttributeError): return ''
+def media_url(request, field, resource_type=None):
+    try:
+        if not field:
+            return ''
+        storage = field.storage
+        url = (
+            storage.url_for_resource_type(field.name, resource_type)
+            if resource_type and hasattr(storage, 'url_for_resource_type')
+            else field.url
+        )
+        return request.build_absolute_uri(url) if request else url
+    except Exception:
+        logger.exception('Could not build a media URL for a stored upload.')
+        return ''
+
+def media_name(field):
+    """Return a useful original-style filename after Cloudinary storage."""
+    if not field:
+        return ''
+    name = str(field.name or '')
+    extension = ''
+    if '::' in name:
+        metadata, name = name.split('::', 1)
+        if '|' in metadata:
+            extension = metadata.split('|', 1)[1].lower()
+    if not extension:
+        from pathlib import Path
+        extension = Path(name).suffix.lower()
+    basename = name.rsplit('/', 1)[-1]
+    if extension and not basename.lower().endswith(extension):
+        basename += extension
+    # Older voice-note uploads lost their suffix when Cloudinary returned only
+    # a public ID. Preserve their audio classification for the mobile player.
+    if not extension and basename.lower().startswith('voice_'):
+        basename += '.m4a'
+    return basename
 
 def notify(recipient, actor, kind, text, target=''):
     if recipient.pk != actor.pk:
@@ -70,7 +110,7 @@ def post_data(post, request, viewer):
             'created_at': post.created_at.isoformat(), 'likes': post.likes.count(),
             'liked': post.likes.filter(pk=viewer.pk).exists(),
             'attachment': media_url(request, post.attachment),
-            'attachment_name': post.attachment.name.rsplit('/',1)[-1] if post.attachment else '',
+            'attachment_name': media_name(post.attachment),
             'comments_count': post.comments.count(), 'is_mine': post.user_id == viewer.pk,
             'edited_at': post.edited_at.isoformat() if post.edited_at else ''}
 
@@ -83,7 +123,7 @@ def message_data(m, request, viewer):
             'is_me': m.sender_id == viewer.pk, 'is_read': bool(m.read_at and m.sender_id == viewer.pk and show_read),
             'edited_at': m.edited_at.isoformat() if m.edited_at else '', 'reply_to_id': m.reply_to_id,
             'reply_to': m.reply_to.message if m.reply_to and not m.reply_to.is_deleted else '',
-            'attachment': media_url(request, m.attachment), 'attachment_name': m.attachment.name.rsplit('/',1)[-1] if m.attachment else ''}
+            'attachment': media_url(request, m.attachment), 'attachment_name': media_name(m.attachment)}
 
 @csrf_exempt
 @require_http_methods(['POST'])
@@ -408,9 +448,9 @@ def mobile_group_chat(request, group_id):
         reply_to=GroupMessage.objects.filter(pk=data.get('reply_to_id'),group=group).first() if data.get('reply_to_id') else None
         msg=GroupMessage.objects.create(group=group,sender=request.user,message=text,attachment=file,reply_to=reply_to)
         for member in group.members.exclude(pk=request.user.pk): notify(member,request.user,'group',f'New message in {group.name}',f'/groups/{group.id}')
-        return JsonResponse({'message':{'id':msg.id,'sender':msg.sender.username,'sender_id':msg.sender_id,'message':msg.message or '', 'timestamp':msg.timestamp.isoformat(),'is_me':True,'attachment':media_url(request,msg.attachment)}},status=201)
+        return JsonResponse({'message':{'id':msg.id,'sender':msg.sender.username,'sender_id':msg.sender_id,'message':msg.message or '', 'timestamp':msg.timestamp.isoformat(),'is_me':True,'attachment':media_url(request,msg.attachment),'attachment_name':media_name(msg.attachment)}},status=201)
     qs=group.messages.select_related('sender','reply_to').order_by('-timestamp')[:300]
-    data=[{'id':m.id,'sender':m.sender.username,'sender_id':m.sender_id,'message':'This message was deleted' if m.is_deleted else (m.message or ''), 'timestamp':m.timestamp.isoformat(),'is_me':m.sender_id==request.user.pk,'attachment':media_url(request,m.attachment),'edited_at':m.edited_at.isoformat() if m.edited_at else '', 'reply_to_id':m.reply_to_id,'reply_to':m.reply_to.message if m.reply_to and not m.reply_to.is_deleted else ''} for m in list(qs)[::-1]]
+    data=[{'id':m.id,'sender':m.sender.username,'sender_id':m.sender_id,'message':'This message was deleted' if m.is_deleted else (m.message or ''), 'timestamp':m.timestamp.isoformat(),'is_me':m.sender_id==request.user.pk,'attachment':media_url(request,m.attachment),'attachment_name':media_name(m.attachment), 'edited_at':m.edited_at.isoformat() if m.edited_at else '', 'reply_to_id':m.reply_to_id,'reply_to':m.reply_to.message if m.reply_to and not m.reply_to.is_deleted else ''} for m in list(qs)[::-1]]
     return JsonResponse({'group':group_data(group,request.user),'members':[user_data(u,request) for u in group.members.all()],'messages':data})
 
 @csrf_exempt
@@ -441,6 +481,7 @@ def status_data(status, request):
     return {'id': status.id, 'username': status.user.username,
             'avatar': user_data(status.user, request)['avatar'],
             'text': status.text, 'media': media_url(request, status.media),
+            'media_name': media_name(status.media),
             'created_at': status.created_at.isoformat(), 'expires_at': status.expires_at.isoformat(),
             'is_mine': own, 'viewed': own or views.filter(user=request.user).exists(),
             'view_count': views.count() if own else None,
@@ -515,9 +556,22 @@ def mobile_profile(request, username):
     if request.method=='POST':
         data=payload(request) or {}
         if person.pk != request.user.pk:return JsonResponse({'error':'You can only edit your own profile.'},status=403)
+        if 'username' in data:
+            username=str(data.get('username','')).strip()
+            if not username or len(username)>150:
+                return JsonResponse({'error':'Enter a username up to 150 characters.'},status=400)
+            from django.contrib.auth.validators import UnicodeUsernameValidator
+            try:
+                UnicodeUsernameValidator()(username)
+            except ValidationError as exc:
+                return JsonResponse({'error':'; '.join(exc.messages)},status=400)
+            if User.objects.exclude(pk=person.pk).filter(username__iexact=username).exists():
+                return JsonResponse({'error':'That username is already in use.'},status=409)
+            person.username=username
         if 'first_name' in data: person.first_name=str(data.get('first_name',''))[:150]
         if 'last_name' in data: person.last_name=str(data.get('last_name',''))[:150]
-        if 'first_name' in data or 'last_name' in data: person.save(update_fields=['first_name','last_name'])
+        user_fields=[field for field in ('username','first_name','last_name') if field in data]
+        if user_fields: person.save(update_fields=user_fields)
         profile.profile_bio=str(data.get('bio',profile.profile_bio or ''))[:500]
         for field, limit in [('home_address',300),('relationship_status',80),('education_status',300)]:
             if field in data: setattr(profile, field, str(data[field])[:limit])
@@ -602,7 +656,7 @@ def mobile_news_shorts(request):
     videos = Video.objects.select_related('user').order_by('-created_at')[:100]
     return JsonResponse({'shorts': [
         {'id': video.id, 'username': video.user.username, 'caption': video.caption,
-         'video': media_url(request, video.video), 'created_at': video.created_at.isoformat()}
+         'video': media_url(request, video.video, resource_type='video'), 'created_at': video.created_at.isoformat()}
         for video in videos
     ]})
 
