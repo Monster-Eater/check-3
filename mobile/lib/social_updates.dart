@@ -28,6 +28,35 @@ ThemeData campusLightTheme() => ThemeData(
   dividerColor: const Color(0xffdddddd),
 );
 
+ThemeData campusDarkTheme() => ThemeData(
+  useMaterial3: true,
+  brightness: Brightness.dark,
+  scaffoldBackgroundColor: const Color(0xff121212),
+  colorScheme: const ColorScheme.dark(
+    primary: Color(0xffc7c7c7),
+    onPrimary: Color(0xff222222),
+    secondary: Color(0xffaaaaaa),
+    onSecondary: Color(0xff222222),
+    surface: Color(0xff1e1e1e),
+    onSurface: Color(0xffeeeeee),
+    primaryContainer: Color(0xff383838),
+    onPrimaryContainer: Color(0xfff1f1f1),
+    secondaryContainer: Color(0xff333333),
+    onSecondaryContainer: Color(0xffeeeeee),
+    surfaceTint: Colors.transparent,
+  ),
+  appBarTheme: const AppBarTheme(
+    backgroundColor: Color(0xff1e1e1e),
+    foregroundColor: Color(0xffeeeeee),
+    surfaceTintColor: Colors.transparent,
+  ),
+  navigationBarTheme: const NavigationBarThemeData(
+    backgroundColor: Color(0xff1e1e1e),
+    indicatorColor: Color(0xff383838),
+  ),
+  dividerColor: const Color(0xff393939),
+);
+
 class UserAvatar extends StatelessWidget {
   const UserAvatar({
     super.key,
@@ -58,57 +87,34 @@ class UserAvatar extends StatelessWidget {
   );
 }
 
-bool socialVideo(String name, [String filename='']) => isVideoMedia(name,filename);
-bool socialPhoto(String name, [String filename='']) => isImageMedia(name,filename);
+bool socialVideo(String name, [String filename = '']) =>
+    isVideoMedia(name, filename);
+bool socialPhoto(String name, [String filename = '']) =>
+    isImageMedia(name, filename);
 
 class SocialMediaView extends StatelessWidget {
-  const SocialMediaView({super.key, required this.url, this.filename=''});
+  const SocialMediaView({super.key, required this.url, this.filename = '', this.mimeType = '', this.api});
   final String url;
   final String filename;
+  final String mimeType;
+  final CampusApi? api;
   @override
   Widget build(BuildContext context) {
-    if (socialVideo(url,filename))
+    final displayUrl = api?.absoluteMediaUrl(url) ?? url;
+    final kind = mediaKind(mimeType);
+    if (kind == 'video' || socialVideo(url, filename))
       return Center(
-        child: InlineVideoPlayer(key: ValueKey(url), url: url),
+        child: InlineVideoPlayer(key: ValueKey(displayUrl), url: displayUrl),
       );
-    if (socialPhoto(url,filename))
-      return InkWell(
-        onTap: () => showDialog<void>(
-          context: context,
-          builder: (dialogContext) => Dialog(
-            child: Stack(
-              children: [
-                InteractiveViewer(
-                  minScale: .5,
-                  maxScale: 5,
-                  child: Image.network(
-                    url,
-                    fit: BoxFit.contain,
-                    errorBuilder: (_, __, ___) => const Center(
-                      child: Text('Photo unavailable'),
-                    ),
-                  ),
-                ),
-                Positioned(
-                  right: 4,
-                  top: 4,
-                  child: IconButton(
-                    onPressed: () => Navigator.pop(dialogContext),
-                    icon: const Icon(Icons.close),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-        child: Image.network(
-          url,
-          width: double.infinity,
-          fit: BoxFit.contain,
-          errorBuilder: (_, __, ___) => const Padding(
-            padding: EdgeInsets.all(24),
-            child: Text('Photo unavailable'),
-          ),
+    if (kind == 'audio') return InlineAudioPlayer(url: displayUrl);
+    if (kind == 'image' || socialPhoto(url, filename))
+      return Image.network(
+        displayUrl,
+        width: double.infinity,
+        fit: BoxFit.contain,
+        errorBuilder: (_, __, ___) => const Padding(
+          padding: EdgeInsets.all(24),
+          child: Text('Photo unavailable'),
         ),
       );
     return TextButton.icon(
@@ -789,6 +795,8 @@ class _StatusViewerState extends State<StatusViewer> {
                         key: ValueKey(s['id']),
                         url: s['media'],
                         filename: (s['media_name'] ?? '').toString(),
+                        mimeType: (s['media_mime_type'] ?? s['mime_type'] ?? s['content_type'] ?? '').toString(),
+                        api: widget.api,
                       ),
                     if ((s['text'] ?? '').isNotEmpty)
                       Padding(

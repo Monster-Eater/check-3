@@ -46,6 +46,9 @@ Replace `192.168.1.20` with your computer's actual address in both places.
 
 ## Changes in this repair
 
+- Fixed the saved dark-theme option so the app actually switches themes.
+- Android now defaults to the latest known Render service; use **Backend server** to enter another deployment or a local LAN address.
+- Chat and feed media viewers now resolve relative Django media paths and use attachment MIME metadata when the API provides it.
 - Aligned plugin compile SDKs to API 36 to fix file_picker AAR metadata validation.
 - Updated record to 6.2.1-compatible dependencies and retained resolved versions.
 - Added path_provider and writable temporary paths for Android voice recordings.
