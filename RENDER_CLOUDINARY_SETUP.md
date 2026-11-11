@@ -1,6 +1,6 @@
 # Render and Cloudinary setup
 
-The Django project uses Cloudinary as its media storage when Cloudinary credentials are present. Without credentials it keeps using local media storage, so local development continues to work.
+The Django project uses Cloudinary as its media storage when Cloudinary credentials are present. Without credentials it uses local media storage for development. Production now stops at startup if Cloudinary or S3 is missing: Render's app filesystem is temporary, and local media URLs would disappear or return 404 after restarts/deploys.
 
 ## Configure Render
 
@@ -18,3 +18,5 @@ Do not commit the real credentials or put them in this ZIP. Keep them only in Re
 ## Database migrations
 
 The added group, privacy, message, post, and comment fields require Django migrations. Run `python manage.py migrate` as a Render pre-deploy command or from the deployed service shell after the code is deployed.
+
+For Django Channels, Redis, Daphne and Flutter offline-sync setup, see [RENDER_REALTIME_SETUP.md](RENDER_REALTIME_SETUP.md).

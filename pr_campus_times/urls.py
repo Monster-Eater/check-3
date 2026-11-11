@@ -22,6 +22,7 @@ urlpatterns = [
     path('api/mobile/news-shorts/', mobile_api.mobile_news_shorts, name='mobile_news_shorts'),
     path('api/mobile/feed/', mobile_api.mobile_feed, name='mobile_feed'),
     path('api/mobile/feed/<int:post_id>/', mobile_api.mobile_post_detail, name='mobile_post_detail'),
+    path('api/mobile/feed/<int:post_id>/seen/', mobile_api.mobile_post_seen, name='mobile_post_seen'),
     path('api/mobile/feed/<int:post_id>/like/', mobile_api.mobile_like, name='mobile_like'),
     path('api/mobile/contacts/', mobile_api.mobile_contacts, name='mobile_contacts'),
     path('api/mobile/chat/<str:username>/', mobile_api.mobile_chat, name='mobile_chat'),

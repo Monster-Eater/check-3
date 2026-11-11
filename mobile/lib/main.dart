@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
+import 'dart:math' as math;
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
@@ -15,6 +16,9 @@ import 'package:geolocator/geolocator.dart';
 import 'package:image/image.dart' as img;
 import 'package:video_player/video_player.dart';
 import 'package:just_audio/just_audio.dart';
+import 'package:web_socket_channel/web_socket_channel.dart';
+import 'package:visibility_detector/visibility_detector.dart';
+import 'offline_outbox.dart';
 
 part 'social_updates.dart';
 
@@ -564,6 +568,11 @@ class CampusApi {
   String? activeUsername;
   String? serverOverride;
   final prefsFuture = SharedPreferences.getInstance();
+  final StreamController<Map<String, dynamic>> realtimeEvents = StreamController.broadcast();
+  WebSocketChannel? _socket;
+  bool _socketReady = false, _syncingOutbox = false;
+  Timer? _reconnectTimer, _outboxTimer;
+  final Map<String, Completer<void>> _pendingAcks = {};
   String get base {
     final raw =
         serverOverride ??
@@ -594,6 +603,7 @@ class CampusApi {
     if (token == null) return false;
     try {
       await get('/api/mobile/me/');
+      connectRealtime();
       return true;
     } on ApiException catch (e) {
       if (e.statusCode == 401) {
@@ -601,8 +611,10 @@ class CampusApi {
         await (await prefsFuture).remove('api_token');
         return false;
       }
+      connectRealtime();
       return true; // Keep the token during temporary server errors.
     } catch (_) {
+      connectRealtime();
       return true; // A network outage must not sign the user out.
     }
   }
@@ -706,6 +718,7 @@ class CampusApi {
     token = data['token'];
     activeUsername = (data['username'] ?? details['username']).toString();
     await _rememberAccount();
+    connectRealtime();
   }
 
   Future<void> signIn(String username, String password) async {
@@ -716,6 +729,7 @@ class CampusApi {
     token = data['token'];
     activeUsername = (data['username'] ?? username).toString();
     await _rememberAccount();
+    connectRealtime();
   }
 
   Future<void> _rememberAccount() async {
@@ -735,6 +749,7 @@ class CampusApi {
   }
 
   Future<void> switchAccount(String username) async {
+    _closeRealtime();
     final prefs=await prefsFuture;
     final raw=prefs.getString('saved_accounts')??'{}';
     final accounts=Map<String,dynamic>.from(jsonDecode(raw) as Map);
@@ -743,9 +758,11 @@ class CampusApi {
     token=next.toString(); activeUsername=username;
     await prefs.setString('api_token',token!); await prefs.setString('active_username',username);
     await get('/api/mobile/me/');
+    connectRealtime();
   }
 
   Future<void> signOut() async {
+    _closeRealtime();
     try {
       await http.delete(uri('/api/mobile/me/'), headers: headers);
     } catch (_) {}
@@ -758,6 +775,126 @@ class CampusApi {
     await (await prefsFuture).remove('api_token');
     await (await prefsFuture).remove('active_username');
   }
+
+  String newClientId() {
+    final random = math.Random.secure();
+    final b = List<int>.generate(16, (_) => random.nextInt(256));
+    b[6] = (b[6] & 0x0f) | 0x40;
+    b[8] = (b[8] & 0x3f) | 0x80;
+    final h = b.map((v) => v.toRadixString(16).padLeft(2, '0')).join();
+    return '${h.substring(0,8)}-${h.substring(8,12)}-${h.substring(12,16)}-${h.substring(16,20)}-${h.substring(20)}';
+  }
+
+  void connectRealtime() {
+    if (token == null || _socket != null) return;
+    _outboxTimer ??= Timer.periodic(const Duration(seconds: 15), (_) => _syncOutbox());
+    final baseUri = Uri.parse(base);
+    final socketUri = baseUri.replace(scheme: baseUri.scheme == 'https' ? 'wss' : 'ws', path: '/ws/app/');
+    try {
+      final channel = WebSocketChannel.connect(socketUri, protocols: ['campus.v1', 'campus-token.$token']);
+      _socket = channel;
+      channel.ready.then((_) {
+        _socketReady = true;
+        _reconnectTimer?.cancel();
+        _syncOutbox();
+      }).catchError((_) => _scheduleReconnect());
+      channel.stream.listen((raw) {
+        try {
+          final event = Map<String, dynamic>.from(jsonDecode(raw.toString()) as Map);
+          final type = event['type']?.toString() ?? '';
+          if (type == 'chat.ack' || type == 'feed.ack') {
+            final id = event['client_id']?.toString();
+            if (id != null && _pendingAcks.containsKey(id)) {
+              _pendingAcks.remove(id)!.complete();
+              _removeOutboxByClient(id);
+            }
+          }
+          realtimeEvents.add(event);
+          if (type == 'chat.message' && event['kind'] == 'direct' && event['sender_id'] != null) {
+            _sendSocket({'type':'message.delivered','message_id':event['id']});
+          }
+          if (type == 'chat.message' && event['kind'] == 'group') {
+            _sendSocket({'type':'group.delivered','group_id':event['group_id'],'message_id':event['id']});
+          }
+          if (type == 'ready') _syncOutbox();
+        } catch (_) {}
+      }, onError: (_) => _scheduleReconnect(), onDone: _scheduleReconnect);
+    } catch (_) { _scheduleReconnect(); }
+  }
+
+  void _scheduleReconnect() {
+    _socketReady = false;
+    _socket = null;
+    _reconnectTimer ??= Timer(const Duration(seconds: 3), () { _reconnectTimer = null; connectRealtime(); });
+  }
+
+  void _closeRealtime() {
+    _reconnectTimer?.cancel(); _reconnectTimer = null;
+    _outboxTimer?.cancel(); _outboxTimer = null;
+    _socketReady = false;
+    _socket?.sink.close(); _socket = null;
+    for (final ack in _pendingAcks.values) { if (!ack.isCompleted) ack.completeError(Exception('Connection closed')); }
+    _pendingAcks.clear();
+  }
+
+  void _sendSocket(Map<String, dynamic> data) {
+    if (!_socketReady || _socket == null) throw Exception('Connecting to live messaging…');
+    _socket!.sink.add(jsonEncode(data));
+  }
+
+  Future<void> _removeOutboxByClient(String clientId) async {
+    final outbox = OfflineOutbox.instance;
+    for (final row in await outbox.pending(activeUsername ?? '')) {
+      if (row.value['client_id'] == clientId) await outbox.remove(row.key);
+    }
+  }
+
+  Future<void> _syncOutbox() async {
+    if (_syncingOutbox || token == null) return;
+    _syncingOutbox = true;
+    try {
+      final outbox = OfflineOutbox.instance;
+      for (final row in await outbox.pending(activeUsername ?? '')) {
+        final data = row.value;
+        final realtime = data['realtime'];
+        if (realtime is Map) {
+          if (!_socketReady) continue;
+          final clientId = data['client_id'].toString();
+          final completer = Completer<void>();
+          _pendingAcks[clientId] = completer;
+          try { _sendSocket(Map<String, dynamic>.from(realtime)); await completer.future.timeout(const Duration(seconds: 12)); }
+          catch (_) { _pendingAcks.remove(clientId); break; }
+        } else {
+          try {
+            final encoded = data['bytes']?.toString();
+            if (encoded != null) {
+              final file = PickedUpload(data['filename']?.toString() ?? 'upload.bin', base64Decode(encoded), null);
+              await upload(data['path'].toString(), fields: Map<String,String>.from(data['fields'] as Map), file: file, fileField: data['file_field']?.toString() ?? 'attachment');
+            } else {
+              await post(data['path'].toString(), Map<String,dynamic>.from(data['fields'] as Map));
+            }
+            await outbox.remove(row.key);
+          } catch (_) { break; }
+        }
+      }
+    } catch (_) {} finally { _syncingOutbox = false; }
+  }
+
+  Future<void> queueRealtime(Map<String, dynamic> payload, {required String path, required Map<String, dynamic> fields}) async {
+    final id = payload['client_id'].toString();
+    await OfflineOutbox.instance.enqueue(path:path, fields:fields, clientId:id, owner:activeUsername ?? '', realtime:payload);
+    _syncOutbox();
+  }
+
+  Future<void> queueUpload(String path, {required Map<String,String> fields, required PickedUpload file, required String clientId, String fileField='attachment'}) async {
+    await OfflineOutbox.instance.enqueue(path:path, fields:fields, clientId:clientId, owner:activeUsername ?? '', bytes:file.bytes, filename:file.name, fileField:fileField);
+    _syncOutbox();
+  }
+
+  void subscribeGroup(int groupId) { if (_socketReady) _sendSocket({'type':'group.subscribe','group_id':groupId}); }
+  void markDirectSeen(String username) { if (_socketReady) _sendSocket({'type':'message.seen','username':username}); }
+  void markGroupSeen(int groupId) { if (_socketReady) _sendSocket({'type':'group.seen','group_id':groupId}); }
+  void markPostSeen(int postId) { if (_socketReady) _sendSocket({'type':'post.seen','post_id':postId}); }
 }
 
 class ApiException implements Exception {
@@ -1389,10 +1526,14 @@ class _FeedScreenState extends State<FeedScreen> {
   String? error;
   final text = TextEditingController();
   PickedUpload? file;
+  StreamSubscription<Map<String, dynamic>>? realtimeSub;
   @override
   void initState() {
     super.initState();
     refresh();
+    realtimeSub = widget.api.realtimeEvents.stream.listen((event) {
+      if (event['type'] == 'ready' || event['type'] == 'feed.post' || event['type'] == 'post.receipt') refresh();
+    });
   }
 
   Future<void> refresh() async {
@@ -1411,11 +1552,13 @@ class _FeedScreenState extends State<FeedScreen> {
     if (publishing || (text.text.trim().isEmpty && file == null)) return;
     setState(() => publishing = true);
     try {
-      await widget.api.upload(
-        '/api/mobile/feed/',
-        fields: {'body': text.text.trim(), 'title': 'Campus update'},
-        file: file,
-      );
+      final clientId = widget.api.newClientId();
+      final body = text.text.trim();
+      if (file == null) {
+        await widget.api.queueRealtime({'type':'feed.send','client_id':clientId,'body':body,'title':'Campus update','category':'General'}, path:'/api/mobile/feed/', fields:{'client_id':clientId,'body':body,'title':'Campus update','category':'General'});
+      } else {
+        await widget.api.queueUpload('/api/mobile/feed/', fields:{'client_id':clientId,'body':body,'title':'Campus update','category':'General'}, file:file!, clientId:clientId);
+      }
       text.clear();
       file = null;
       await refresh();
@@ -1471,6 +1614,7 @@ class _FeedScreenState extends State<FeedScreen> {
 
   @override
   void dispose() {
+    realtimeSub?.cancel();
     text.dispose();
     super.dispose();
   }
@@ -1590,22 +1734,25 @@ class _FeedScreenState extends State<FeedScreen> {
             ),
           ),
         ...posts.map(
-          (p) => PostCard(
-            api: widget.api,
-            post: p,
-            onLike: () => like(p),
-            onComments: () => comments(p),
-            onShare: () => share(p),
-            onEdit: p['is_mine']==true ? () => postActions(p,'edit') : null,
-            onDelete: p['is_mine']==true ? () => postActions(p,'delete') : null,
-            onProfile: () => Navigator.push(
-              c,
-              MaterialPageRoute(
-                builder: (_) =>
-                    ProfileScreen(api: widget.api, username: p['username']),
+          (p) {
+            final postId=int.tryParse('${p['id']}');
+            return VisibilityDetector(
+              key: Key('post-${p['id']}'),
+              onVisibilityChanged: (info) {
+                if (postId != null && p['is_mine'] != true && info.visibleFraction >= .55) widget.api.markPostSeen(postId);
+              },
+              child: PostCard(
+                api: widget.api,
+                post: p,
+                onLike: () => like(p),
+                onComments: () => comments(p),
+                onShare: () => share(p),
+                onEdit: p['is_mine']==true ? () => postActions(p,'edit') : null,
+                onDelete: p['is_mine']==true ? () => postActions(p,'delete') : null,
+                onProfile: () => Navigator.push(c, MaterialPageRoute(builder: (_) => ProfileScreen(api: widget.api, username: p['username']))),
               ),
-            ),
-          ),
+            );
+          },
         ),
       ],
     ),
@@ -1738,6 +1885,11 @@ class PostCard extends StatelessWidget {
                     icon: const Icon(Icons.share_outlined),
                   ),
                 const Spacer(),
+                if (post['is_mine'] == true)
+                  Padding(
+                    padding: const EdgeInsets.only(right: 8),
+                    child: Text('✓ Sent · ✓✓ ${post['delivered_count'] ?? 0} delivered · ✓✓ ${post['seen_count'] ?? 0} seen', style: Theme.of(c).textTheme.labelSmall?.copyWith(color: Colors.blueGrey)),
+                  ),
                 Text(
                   post['category'] ?? 'General',
                   style: Theme.of(c).textTheme.labelSmall,
@@ -2070,7 +2222,7 @@ class _ChatScreenState extends State<ChatScreen> {
   bool loading = true, sending = false, online = false, typing = false;
   String lastSeen = '';
   String? error;
-  Timer? timer;
+  StreamSubscription<Map<String, dynamic>>? realtimeSub;
   Timer? typingTimer;
   String get path =>
       '/api/mobile/chat/${Uri.encodeComponent(widget.person['username'])}/';
@@ -2078,15 +2230,23 @@ class _ChatScreenState extends State<ChatScreen> {
   void initState() {
     super.initState();
     load();
-    timer = Timer.periodic(
-      const Duration(seconds: 4),
-      (_) => load(silent: true),
-    );
+    realtimeSub = widget.api.realtimeEvents.stream.listen((event) {
+      final type = event['type']?.toString() ?? '';
+      if (type == 'ready') { load(silent:true); widget.api.markDirectSeen(widget.person['username'].toString()); }
+      if (type == 'chat.message' || type == 'chat.ack' || type == 'message.seen' || type == 'message.delivered' || type == 'message.receipt') {
+        final peer = widget.person['username'].toString();
+        if (event['kind'] == 'direct' && (event['sender'] == peer || event['recipient'] == peer) || type == 'message.seen' || type == 'message.delivered') {
+          load(silent:true);
+          widget.api.markDirectSeen(peer);
+        }
+      }
+    });
   }
 
   Future<void> load({bool silent = false}) async {
     try {
       final d = await widget.api.get(path);
+      widget.api.markDirectSeen(widget.person['username'].toString());
       if (mounted)
         setState(() {
           currentPerson = d['person'];
@@ -2112,7 +2272,8 @@ class _ChatScreenState extends State<ChatScreen> {
     input.clear();
     setState(() => sending = true);
     try {
-      await widget.api.post(path, {'message': t, if (replyTo != null) 'reply_to_id': replyTo!['id']});
+      final clientId=widget.api.newClientId();
+      await widget.api.queueRealtime({'type':'direct.send','client_id':clientId,'username':widget.person['username'],'message':t,if(replyTo!=null)'reply_to_id':replyTo!['id']}, path:path, fields:{'client_id':clientId,'message':t,if(replyTo!=null)'reply_to_id':replyTo!['id']});
       replyTo = null;
       await load();
     } catch (e) {
@@ -2180,7 +2341,8 @@ class _ChatScreenState extends State<ChatScreen> {
     }
     setState(() => sending = true);
     try {
-      await widget.api.upload(path, file: media);
+      final clientId=widget.api.newClientId();
+      await widget.api.queueUpload(path, fields:{'client_id':clientId,if(replyTo!=null)'reply_to_id':'${replyTo!['id']}'}, file:media, clientId:clientId);
       await load();
     } catch (e) {
       if (mounted) snack(context, errorText(e));
@@ -2242,7 +2404,8 @@ class _ChatScreenState extends State<ChatScreen> {
   Future<void> shareLocation() async {
     try {
       final link = await ChatMediaTools.currentLocationLink();
-      await widget.api.post(path, {'message': link});
+      final clientId=widget.api.newClientId();
+      await widget.api.queueRealtime({'type':'direct.send','client_id':clientId,'username':widget.person['username'],'message':link}, path:path, fields:{'client_id':clientId,'message':link});
       await load();
     } catch (e) {
       if (mounted) snack(context, errorText(e));
@@ -2315,7 +2478,8 @@ class _ChatScreenState extends State<ChatScreen> {
     if (f == null || !mounted) return;
     setState(() => sending = true);
     try {
-      await widget.api.upload(path, file: f);
+      final clientId=widget.api.newClientId();
+      await widget.api.queueUpload(path, fields:{'client_id':clientId}, file:f, clientId:clientId);
       await load();
     } catch (e) {
       if (mounted) snack(context, errorText(e));
@@ -2346,7 +2510,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   @override
   void dispose() {
-    timer?.cancel();
+    realtimeSub?.cancel();
     typingTimer?.cancel();
     recorder.dispose();
     input.dispose();
@@ -2454,10 +2618,10 @@ class _ChatScreenState extends State<ChatScreen> {
                                 mimeType: (m['attachment_mime_type'] ?? m['mime_type'] ?? m['content_type'] ?? '').toString(),
                               ),
                             Text(
-                              '${m['edited_at'] != null && m['edited_at'] != '' ? 'edited · ' : ''}${stamp(m['timestamp'])}${m['is_read'] == true ? '  ✓✓' : ''}',
+                              '${m['edited_at'] != null && m['edited_at'] != '' ? 'edited · ' : ''}${stamp(m['timestamp'])}${mine ? (m['is_read'] == true ? '  ✓✓ Seen' : m['is_delivered'] == true ? '  ✓✓ Delivered' : '  ✓ Sent') : ''}',
                               style: TextStyle(
                                 fontSize: 10,
-                                color: Colors.black54,
+                                color: mine && m['is_read'] == true ? Colors.blue : Colors.black54,
                               ),
                             ),
                           ],
@@ -2733,18 +2897,25 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   final input = TextEditingController();
   final recorder = AudioRecorder();
   bool recording = false;
-  Timer? timer;
+  StreamSubscription<Map<String, dynamic>>? realtimeSub;
   String get path => '/api/mobile/groups/${widget.group['id']}/';
   @override
   void initState() {
     super.initState();
     load();
-    timer = Timer.periodic(const Duration(seconds: 4), (_) => load());
+    final groupId=widget.group['id'] as int;
+    widget.api.subscribeGroup(groupId);
+    realtimeSub=widget.api.realtimeEvents.stream.listen((event){
+      final type=event['type']?.toString()??'';
+      if(type=='ready'){widget.api.subscribeGroup(groupId);load();}
+      if(type=='chat.message'&&event['kind']=='group'&&event['group_id']==groupId||type=='group.receipt'&&event['group_id']==groupId){load();widget.api.markGroupSeen(groupId);}
+    });
   }
 
   Future<void> load() async {
     try {
       final d = await widget.api.get(path);
+      widget.api.markGroupSeen(widget.group['id'] as int);
       if (mounted)
         setState(() {
           messages = d['messages'] ?? [];
@@ -2763,7 +2934,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     input.clear();
     setState(() => sending = true);
     try {
-      await widget.api.post(path, {'message': t, if (replyTo != null) 'reply_to_id': replyTo!['id']});
+      final clientId=widget.api.newClientId();
+      await widget.api.queueRealtime({'type':'group.send','client_id':clientId,'group_id':widget.group['id'],'message':t,if(replyTo!=null)'reply_to_id':replyTo!['id']}, path:path, fields:{'client_id':clientId,'message':t,if(replyTo!=null)'reply_to_id':replyTo!['id']});
       replyTo = null;
       await load();
     } catch (e) {
@@ -2832,7 +3004,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     }
     setState(() => sending = true);
     try {
-      await widget.api.upload(path, file: media);
+      final clientId=widget.api.newClientId();
+      await widget.api.queueUpload(path, fields:{'client_id':clientId,if(replyTo!=null)'reply_to_id':'${replyTo!['id']}'}, file:media, clientId:clientId);
       await load();
     } catch (e) {
       if (mounted) snack(context, errorText(e));
@@ -2968,7 +3141,8 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     if (f == null || !mounted) return;
     setState(() => sending = true);
     try {
-      await widget.api.upload(path, file: f);
+      final clientId=widget.api.newClientId();
+      await widget.api.queueUpload(path, fields:{'client_id':clientId}, file:f, clientId:clientId);
       await load();
     } catch (e) {
       if (mounted) snack(context, errorText(e));
@@ -3039,7 +3213,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
 
   @override
   void dispose() {
-    timer?.cancel();
+    realtimeSub?.cancel();
     recorder.dispose();
     input.dispose();
     super.dispose();
@@ -3108,10 +3282,10 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                 mimeType: (m['attachment_mime_type'] ?? m['mime_type'] ?? m['content_type'] ?? '').toString(),
                               ),
                             Text(
-                              stamp(m['timestamp']),
+                              '${stamp(m['timestamp'])}${m['is_me'] == true ? (m['is_read'] == true ? '  ✓✓ Seen' : m['is_delivered'] == true ? '  ✓✓ Delivered' : '  ✓ Sent') : ''}',
                               style: TextStyle(
                                 fontSize: 10,
-                                color: Colors.black54,
+                                color: m['is_me'] == true && m['is_read'] == true ? Colors.blue : Colors.black54,
                               ),
                             ),
                           ],

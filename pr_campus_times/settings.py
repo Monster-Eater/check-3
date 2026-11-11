@@ -30,17 +30,22 @@ ALLOWED_HOSTS = [h.strip() for h in os.environ.get(
 CSRF_TRUSTED_ORIGINS = [origin.strip() for origin in os.environ.get(
     'DJANGO_CSRF_TRUSTED_ORIGINS', ''
 ).split(',') if origin.strip()]
+WS_ALLOWED_ORIGINS = [origin.strip() for origin in os.environ.get(
+    'DJANGO_WS_ALLOWED_ORIGINS', ''
+).split(',') if origin.strip()]
 
 
 # Application definition
 
 INSTALLED_APPS = [
+    'daphne',
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'channels',
     'cloudinary_storage',
     'cloudinary',
     'home',
@@ -81,6 +86,15 @@ TEMPLATES = [
 ]
 
 WSGI_APPLICATION = 'pr_campus_times.wsgi.application'
+ASGI_APPLICATION = 'pr_campus_times.asgi.application'
+
+REDIS_URL = os.environ.get('REDIS_URL', '').strip()
+if REDIS_URL:
+    CHANNEL_LAYERS = {'default': {'BACKEND': 'channels_redis.core.RedisChannelLayer', 'CONFIG': {'hosts': [REDIS_URL], 'capacity': 500, 'expiry': 60}}}
+elif DEBUG:
+    CHANNEL_LAYERS = {'default': {'BACKEND': 'channels.layers.InMemoryChannelLayer'}}
+else:
+    raise ImproperlyConfigured('Set REDIS_URL to a Render Key Value internal URL for WebSocket messaging.')
 
 
 # Database
@@ -166,6 +180,8 @@ if os.environ.get('CLOUDINARY_URL') or all(cloudinary_config.values()):
         'BACKEND': 'cloudinary_media_storage.AutoResourceCloudinaryStorage',
     }
 else:
+    if not DEBUG and not os.environ.get('AWS_STORAGE_BUCKET_NAME'):
+        raise ImproperlyConfigured('Configure Cloudinary or S3 storage in production so uploaded media survives deploys.')
     media_storage = default_storage
 
 STORAGES = {

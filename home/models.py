@@ -48,6 +48,10 @@ class Meep(models.Model):
     title = models.CharField(max_length=255, default = 'No Title')
     attachment = models.FileField(upload_to='feed_attachments/', blank=True, null=True)
     edited_at = models.DateTimeField(blank=True, null=True)
+    client_id = models.UUIDField(blank=True, null=True, db_index=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['user','client_id'], condition=models.Q(client_id__isnull=False), name='unique_post_client_id')]
 
     def __str__(self):
         return self.title + ' | ' + str(self.user)
@@ -162,6 +166,16 @@ class Comment(models.Model):
     body = models.TextField()
     date_added = models.DateField(auto_now_add= True)
     updated_at = models.DateTimeField(auto_now=True)
+
+
+class PostReceipt(models.Model):
+    post = models.ForeignKey(Meep, on_delete=models.CASCADE, related_name='receipts')
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='post_receipts')
+    delivered_at = models.DateTimeField(blank=True, null=True)
+    seen_at = models.DateTimeField(blank=True, null=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['post', 'user'], name='unique_post_receipt')]
 
     def __str__(self):
         return '%s - %s' % (self.post.title, self.name)

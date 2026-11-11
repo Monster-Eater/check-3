@@ -13,6 +13,11 @@ class Message(models.Model):
     reply_to = models.ForeignKey('self', null=True, blank=True, on_delete=models.SET_NULL, related_name='replies')
     hidden_for = models.ManyToManyField(User, blank=True, related_name='hidden_chat_messages')
     is_deleted = models.BooleanField(default=False)
+    delivered_at = models.DateTimeField(blank=True, null=True)
+    client_id = models.UUIDField(null=True, blank=True, db_index=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['sender','client_id'], condition=models.Q(client_id__isnull=False), name='unique_direct_client_message')]
 
     def __str__(self):
         return f"{self.sender.username} to {self.receiver.username}: {self.message[:20]}"
@@ -37,9 +42,13 @@ class GroupMessage(models.Model):
     edited_at = models.DateTimeField(blank=True, null=True)
     reply_to = models.ForeignKey('self', null=True, blank=True, on_delete=models.SET_NULL, related_name='replies')
     is_deleted = models.BooleanField(default=False)
+    client_id = models.UUIDField(null=True, blank=True, db_index=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['group','sender','client_id'], condition=models.Q(client_id__isnull=False), name='unique_group_client_message')]
 
     def __str__(self):
-        return f"{self.sender.username} in {self.group.name}: {self.message[:20]}"
+        return f"{self.sender.username} in {self.group.name}: {(self.message or '')[:20]}"
     ChatMessage = Message
 
 class OfficeProfile(models.Model):
@@ -105,3 +114,13 @@ class StatusView(models.Model):
 
     class Meta:
         constraints = [models.UniqueConstraint(fields=['status', 'user'], name='unique_status_viewer')]
+
+
+class GroupMessageReceipt(models.Model):
+    message = models.ForeignKey(GroupMessage, on_delete=models.CASCADE, related_name='receipts')
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='group_message_receipts')
+    delivered_at = models.DateTimeField(blank=True, null=True)
+    seen_at = models.DateTimeField(blank=True, null=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['message', 'user'], name='unique_group_message_receipt')]

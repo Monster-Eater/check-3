@@ -1,1 +1,1 @@
-web: gunicorn pr_campus_times.wsgi:application --bind 0.0.0.0:$PORT --workers 2 --threads 4 --timeout 120
+web: daphne -b 0.0.0.0 -p $PORT pr_campus_times.asgi:application

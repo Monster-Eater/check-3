@@ -14,9 +14,12 @@ from django.utils.html import strip_tags
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 from django.db.models import Q, Count
-from chat.models import (Message, MobileAPIToken, Group, GroupMessage,
+from channels.layers import get_channel_layer
+from asgiref.sync import async_to_sync
+import uuid
+from chat.models import (Message, MobileAPIToken, Group, GroupMessage, GroupMessageReceipt,
                          ChatPresence, StatusUpdate, StatusView, SocialNotification)
-from home.models import Meep, Comment, Profile, Complaint, Video
+from home.models import Meep, Comment, Profile, Complaint, Video, PostReceipt
 
 MAX_UPLOAD = 25 * 1024 * 1024
 logger = logging.getLogger(__name__)
@@ -89,6 +92,18 @@ def notify(recipient, actor, kind, text, target=''):
     if recipient.pk != actor.pk:
         SocialNotification.objects.create(recipient=recipient, actor=actor, kind=kind, text=text, target_url=target)
 
+def emit(group, event_type, payload):
+    try:
+        async_to_sync(get_channel_layer().group_send)(group, {'type': event_type, 'payload': payload})
+    except Exception:
+        logger.exception('WebSocket event could not be published.')
+
+def parse_client_id(value):
+    try:
+        return uuid.UUID(str(value)) if value else None
+    except (ValueError, TypeError, AttributeError):
+        return None
+
 def user_data(user, request=None):
     profile = Profile.objects.filter(user=user).first()
     return {'id': user.id, 'username': user.username, 'first_name': user.first_name,
@@ -104,6 +119,8 @@ def user_data(user, request=None):
             'read_receipts': profile.read_receipts if profile else True}
 
 def post_data(post, request, viewer):
+    receipts = list(post.receipts.all())
+    own_receipts = [r for r in receipts if r.user_id == viewer.pk]
     return {'id': post.id, 'username': post.user.username, 'user_id': post.user_id,
             'author': user_data(post.user, request), 'title': post.title or '',
             'body': strip_tags(post.body or ''), 'category': post.category or 'General',
@@ -112,7 +129,11 @@ def post_data(post, request, viewer):
             'attachment': media_url(request, post.attachment),
             'attachment_name': media_name(post.attachment),
             'comments_count': post.comments.count(), 'is_mine': post.user_id == viewer.pk,
-            'edited_at': post.edited_at.isoformat() if post.edited_at else ''}
+            'edited_at': post.edited_at.isoformat() if post.edited_at else '',
+            'delivered_count': sum(1 for r in receipts if r.delivered_at) if post.user_id == viewer.pk else None,
+            'seen_count': sum(1 for r in receipts if r.seen_at) if post.user_id == viewer.pk else None,
+            'is_delivered': bool(own_receipts and own_receipts[0].delivered_at) if post.user_id != viewer.pk else False,
+            'is_seen': bool(own_receipts and own_receipts[0].seen_at) if post.user_id != viewer.pk else False}
 
 def message_data(m, request, viewer):
     other = m.receiver if m.sender_id == viewer.pk else m.sender
@@ -120,7 +141,7 @@ def message_data(m, request, viewer):
     show_read = bool(other_profile is None or other_profile.read_receipts)
     return {'id': m.id, 'sender': m.sender.username, 'sender_id': m.sender_id, 'sender_avatar': user_data(m.sender, request)['avatar'],
             'message': ('This message was deleted' if m.is_deleted else (m.message or '')), 'timestamp': m.timestamp.isoformat(),
-            'is_me': m.sender_id == viewer.pk, 'is_read': bool(m.read_at and m.sender_id == viewer.pk and show_read),
+            'is_me': m.sender_id == viewer.pk, 'is_read': bool(m.read_at and m.sender_id == viewer.pk and show_read), 'is_delivered': bool(m.delivered_at and m.sender_id == viewer.pk),
             'edited_at': m.edited_at.isoformat() if m.edited_at else '', 'reply_to_id': m.reply_to_id,
             'reply_to': m.reply_to.message if m.reply_to and not m.reply_to.is_deleted else '',
             'attachment': media_url(request, m.attachment), 'attachment_name': media_name(m.attachment)}
@@ -209,10 +230,40 @@ def mobile_feed(request):
         file = request.FILES.get('attachment')
         if not body and not file: return JsonResponse({'error':'Write something or attach a file.'}, status=400)
         if file and file.size > MAX_UPLOAD: return JsonResponse({'error':'Maximum upload size is 25 MB.'}, status=413)
-        post = Meep.objects.create(user=request.user, body=body, title=str(data.get('title','Campus update'))[:255], category=str(data.get('category','General'))[:255], attachment=file)
-        return JsonResponse({'post':post_data(post, request, request.user)}, status=201)
-    qs = Meep.objects.select_related('user').prefetch_related('likes').order_by('-created_at')[:100]
+        client_id = parse_client_id(data.get('client_id'))
+        defaults={'body':body,'title':str(data.get('title','Campus update'))[:255],'category':str(data.get('category','General'))[:255],'attachment':file}
+        if client_id: post,created=Meep.objects.get_or_create(user=request.user,client_id=client_id,defaults=defaults)
+        else: post,created=Meep.objects.create(user=request.user,**defaults),True
+        payload_data = post_data(post, request, request.user)
+        if created:
+            emit('campus_feed', 'post.event', payload_data)
+        return JsonResponse({'post':payload_data}, status=201 if created else 200)
+    qs = Meep.objects.select_related('user').prefetch_related('likes','receipts','comments').order_by('-created_at')[:100]
+    now = timezone.now()
+    for post in qs:
+        if post.user_id != request.user.pk:
+            _,created=PostReceipt.objects.get_or_create(post=post, user=request.user, defaults={'delivered_at': now})
+            if created: emit('campus_feed','receipt.event',{'type':'post.receipt','post_id':post.pk,'user_id':request.user.pk,'delivered':True})
+            getattr(post, '_prefetched_objects_cache', {}).pop('receipts', None)
     return JsonResponse({'posts':[post_data(p, request, request.user) for p in qs]})
+
+@csrf_exempt
+@api_login_required
+@require_http_methods(['POST'])
+def mobile_post_seen(request, post_id):
+    post = Meep.objects.filter(pk=post_id).first()
+    if not post:
+        return JsonResponse({'error':'Post not found.'}, status=404)
+    if post.user_id != request.user.pk:
+        receipt, _ = PostReceipt.objects.get_or_create(post=post, user=request.user)
+        now = timezone.now()
+        changed = not bool(receipt.seen_at)
+        if not receipt.seen_at:
+            receipt.delivered_at = receipt.delivered_at or now
+            receipt.seen_at = now
+            receipt.save(update_fields=['delivered_at','seen_at'])
+        if changed: emit('campus_feed', 'receipt.event', {'type':'post.receipt','post_id':post.pk,'user_id':request.user.pk,'seen':True})
+    return JsonResponse({'ok':True})
 
 @csrf_exempt
 @api_login_required
@@ -318,13 +369,25 @@ def mobile_chat(request, username):
         if not text and not file: return JsonResponse({'error':'Write a message or attach a file.'},status=400)
         if file and file.size>MAX_UPLOAD: return JsonResponse({'error':'Maximum upload size is 25 MB.'},status=413)
         reply_to=Message.objects.filter(pk=data.get('reply_to_id'),sender__in=[request.user,other],receiver__in=[request.user,other]).first() if data.get('reply_to_id') else None
-        sent=Message.objects.create(sender=request.user,receiver=other,message=text,attachment=file,reply_to=reply_to)
-        notify(other,request.user,'message',f'New message from {request.user.username}',f'/chat/{request.user.username}')
-        return JsonResponse({'message':message_data(sent,request,request.user)},status=201)
+        client_id=parse_client_id(data.get('client_id'))
+        if client_id: sent,created=Message.objects.get_or_create(sender=request.user,client_id=client_id,defaults={'receiver':other,'message':text,'attachment':file,'reply_to':reply_to})
+        else: sent,created=Message.objects.create(sender=request.user,receiver=other,message=text,attachment=file,reply_to=reply_to),True
+        if sent.receiver_id != other.pk: return JsonResponse({'error':'Client message ID already belongs to another conversation.'},status=409)
+        if created:
+            notify(other,request.user,'message',f'New message from {request.user.username}',f'/chat/{request.user.username}')
+            event={'kind':'direct','id':sent.pk,'client_id':str(client_id or ''),'sender':request.user.username,'sender_id':request.user.pk,'recipient':other.username,'message':sent.message or '', 'timestamp':sent.timestamp.isoformat(),'is_delivered':False}
+            emit(f'user_{other.pk}','chat.event',event)
+            emit(f'user_{request.user.pk}','chat.event',event)
+        return JsonResponse({'message':message_data(sent,request,request.user)},status=201 if created else 200)
     now=timezone.now()
     viewer_profile,_=Profile.objects.get_or_create(user=request.user)
     if viewer_profile.read_receipts:
-        Message.objects.filter(sender=other,receiver=request.user,read_at__isnull=True).update(read_at=now)
+        seen_ids=list(Message.objects.filter(sender=other,receiver=request.user,read_at__isnull=True).values_list('id',flat=True))
+        Message.objects.filter(id__in=seen_ids).update(read_at=now)
+        if seen_ids: emit(f'user_{other.pk}','receipt.event',{'type':'message.seen','message_ids':seen_ids,'reader_id':request.user.pk})
+    delivered_ids=list(Message.objects.filter(sender=other,receiver=request.user,delivered_at__isnull=True).values_list('id',flat=True))
+    Message.objects.filter(id__in=delivered_ids).update(delivered_at=now)
+    if delivered_ids: emit(f'user_{other.pk}','receipt.event',{'type':'message.delivered','message_ids':delivered_ids,'recipient_id':request.user.pk})
     ChatPresence.objects.update_or_create(user=request.user,defaults={'last_seen':now})
     qs=Message.objects.filter(Q(sender=request.user,receiver=other)|Q(sender=other,receiver=request.user)).exclude(hidden_for=request.user).select_related('sender','receiver','reply_to').order_by('-timestamp','-id')[:300]
     msgs=[message_data(m,request,request.user) for m in list(qs)[::-1]]
@@ -446,11 +509,33 @@ def mobile_group_chat(request, group_id):
         if not text and not file:return JsonResponse({'error':'Write a message or attach a file.'},status=400)
         if file and file.size>MAX_UPLOAD:return JsonResponse({'error':'Maximum upload size is 25 MB.'},status=413)
         reply_to=GroupMessage.objects.filter(pk=data.get('reply_to_id'),group=group).first() if data.get('reply_to_id') else None
-        msg=GroupMessage.objects.create(group=group,sender=request.user,message=text,attachment=file,reply_to=reply_to)
-        for member in group.members.exclude(pk=request.user.pk): notify(member,request.user,'group',f'New message in {group.name}',f'/groups/{group.id}')
-        return JsonResponse({'message':{'id':msg.id,'sender':msg.sender.username,'sender_id':msg.sender_id,'message':msg.message or '', 'timestamp':msg.timestamp.isoformat(),'is_me':True,'attachment':media_url(request,msg.attachment),'attachment_name':media_name(msg.attachment)}},status=201)
-    qs=group.messages.select_related('sender','reply_to').order_by('-timestamp')[:300]
-    data=[{'id':m.id,'sender':m.sender.username,'sender_id':m.sender_id,'message':'This message was deleted' if m.is_deleted else (m.message or ''), 'timestamp':m.timestamp.isoformat(),'is_me':m.sender_id==request.user.pk,'attachment':media_url(request,m.attachment),'attachment_name':media_name(m.attachment), 'edited_at':m.edited_at.isoformat() if m.edited_at else '', 'reply_to_id':m.reply_to_id,'reply_to':m.reply_to.message if m.reply_to and not m.reply_to.is_deleted else ''} for m in list(qs)[::-1]]
+        client_id=parse_client_id(data.get('client_id'))
+        if client_id: msg,created=GroupMessage.objects.get_or_create(group=group,sender=request.user,client_id=client_id,defaults={'message':text,'attachment':file,'reply_to':reply_to})
+        else: msg,created=GroupMessage.objects.create(group=group,sender=request.user,message=text,attachment=file,reply_to=reply_to),True
+        if msg.group_id != group.pk:return JsonResponse({'error':'Client message ID already belongs to another group.'},status=409)
+        if created:
+            now=timezone.now()
+            for member in group.members.exclude(pk=request.user.pk): GroupMessageReceipt.objects.get_or_create(message=msg,user=member,defaults={'delivered_at':None})
+            emit(f'chat_group_{group.pk}','chat.event',{'kind':'group','group_id':group.pk,'id':msg.pk,'client_id':str(client_id or ''),'sender':request.user.username,'sender_id':request.user.pk,'message':msg.message or '', 'timestamp':msg.timestamp.isoformat()})
+        if created:
+            for member in group.members.exclude(pk=request.user.pk): notify(member,request.user,'group',f'New message in {group.name}',f'/groups/{group.id}')
+        return JsonResponse({'message':{'id':msg.id,'sender':msg.sender.username,'sender_id':msg.sender_id,'message':msg.message or '', 'timestamp':msg.timestamp.isoformat(),'is_me':True,'attachment':media_url(request,msg.attachment),'attachment_name':media_name(msg.attachment),'client_id':str(client_id or '')}},status=201 if created else 200)
+    now=timezone.now()
+    delivered_any=False
+    with transaction.atomic():
+        recent_ids=list(group.messages.order_by('-timestamp').values_list('id',flat=True)[:300])
+        for msg in group.messages.filter(id__in=recent_ids).exclude(sender=request.user):
+            receipt,_=GroupMessageReceipt.objects.get_or_create(message=msg,user=request.user)
+            if not receipt.delivered_at:
+                receipt.delivered_at=now
+                receipt.save(update_fields=['delivered_at'])
+                delivered_any=True
+    if delivered_any: emit(f'chat_group_{group.pk}','receipt.event',{'type':'group.receipt','group_id':group.pk,'user_id':request.user.pk,'delivered':True})
+    qs=group.messages.select_related('sender','reply_to').prefetch_related('receipts').order_by('-timestamp')[:300]
+    data=[]
+    for m in list(qs)[::-1]:
+        receipt_rows=list(m.receipts.all())
+        data.append({'id':m.id,'sender':m.sender.username,'sender_id':m.sender_id,'message':'This message was deleted' if m.is_deleted else (m.message or ''), 'timestamp':m.timestamp.isoformat(),'is_me':m.sender_id==request.user.pk,'attachment':media_url(request,m.attachment),'attachment_name':media_name(m.attachment), 'edited_at':m.edited_at.isoformat() if m.edited_at else '', 'reply_to_id':m.reply_to_id,'reply_to':m.reply_to.message if m.reply_to and not m.reply_to.is_deleted else '', 'client_id':str(m.client_id or ''),'is_delivered':any(r.delivered_at for r in receipt_rows),'is_read':any(r.seen_at for r in receipt_rows)})
     return JsonResponse({'group':group_data(group,request.user),'members':[user_data(u,request) for u in group.members.all()],'messages':data})
 
 @csrf_exempt
