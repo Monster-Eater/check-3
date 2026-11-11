@@ -580,7 +580,7 @@ class CampusApi {
             ? configuredApiBaseUrl
             : (kIsWeb
                   ? 'http://127.0.0.1:5000'
-                  : 'https://check-2-yy78.onrender.com'));
+                  : 'https://check-3-9r19.onrender.com'));
     return raw.replaceFirst(RegExp(r'/+$'), '');
   }
 
