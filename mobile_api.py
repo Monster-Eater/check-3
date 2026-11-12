@@ -13,7 +13,7 @@ from django.utils import timezone
 from django.utils.html import strip_tags
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
-from django.db.models import Q, Count
+from django.db.models import F, Max, OuterRef, Q, Count, Subquery
 from channels.layers import get_channel_layer
 from asgiref.sync import async_to_sync
 import uuid
@@ -109,6 +109,8 @@ def user_data(user, request=None):
     return {'id': user.id, 'username': user.username, 'first_name': user.first_name,
             'last_name': user.last_name, 'full_name': user.get_full_name() or user.username,
             'bio': profile.profile_bio if profile else '',
+            'phone_number': profile.phone_number if profile and request and request.user.pk == user.pk else '',
+            'phone_discoverable': profile.phone_discoverable if profile and request and request.user.pk == user.pk else False,
             'home_address': profile.home_address if profile else '',
             'relationship_status': profile.relationship_status if profile else '',
             'education_status': profile.education_status if profile else '',
@@ -347,8 +349,21 @@ def mobile_contacts(request):
     q = request.GET.get('q','').strip()
     users = User.objects.exclude(pk=request.user.pk).filter(is_active=True)
     if q: users = users.filter(Q(username__icontains=q)|Q(first_name__icontains=q)|Q(last_name__icontains=q))
+    recent_only = request.GET.get('recent') == '1'
+    if recent_only:
+        latest_message = Message.objects.filter(
+            Q(sender=request.user, receiver=OuterRef('pk')) |
+            Q(sender=OuterRef('pk'), receiver=request.user)
+        ).exclude(hidden_for=request.user).order_by('-timestamp', '-pk')
+        users = users.annotate(
+            last_chat_at=Subquery(latest_message.values('timestamp')[:1])
+        ).filter(last_chat_at__isnull=False).order_by(
+            F('last_chat_at').desc(nulls_last=True), 'username'
+        )
+    else:
+        users = users.order_by('username')
     result=[]
-    for person in users.order_by('username')[:150]:
+    for person in users[:150]:
         last=Message.objects.filter(Q(sender=request.user,receiver=person)|Q(sender=person,receiver=request.user)).exclude(hidden_for=request.user).order_by('-timestamp').first()
         unread=Message.objects.filter(sender=person,receiver=request.user,read_at__isnull=True).exclude(hidden_for=request.user).count()
         presence=ChatPresence.objects.filter(user=person).first()
@@ -356,6 +371,37 @@ def mobile_contacts(request):
         can_see=(not target_profile or target_profile.last_seen_privacy=='everyone' or (target_profile.last_seen_privacy=='followers' and Profile.objects.filter(user=person,followed_by__user=request.user).exists()))
         result.append({**user_data(person,request),'last_message':(last.message if last else '') or ('Attachment' if last and last.attachment else ''), 'last_message_at':last.timestamp.isoformat() if last else '', 'unread':unread,'online':bool(can_see and presence and presence.last_seen >= timezone.now()-timedelta(seconds=45))})
     return JsonResponse({'people':result})
+
+def contact_phone_key(value):
+    digits = ''.join(character for character in str(value or '') if character.isdigit())
+    return digits[2:] if digits.startswith('00') else digits
+
+@csrf_exempt
+@api_login_required
+@require_http_methods(['POST'])
+def mobile_contact_matches(request):
+    data = payload(request) or {}
+    numbers = data.get('numbers', [])
+    if not isinstance(numbers, list) or len(numbers) > 500:
+        return JsonResponse({'error': 'Send a list of up to 500 phone numbers.'}, status=400)
+
+    requested = {contact_phone_key(number) for number in numbers}
+    requested.discard('')
+    if not requested:
+        return JsonResponse({'matches': []})
+
+    matches = []
+    profiles = Profile.objects.filter(
+        phone_discoverable=True,
+    ).exclude(phone_number='').exclude(user=request.user).select_related('user')
+    for profile in profiles:
+        phone_key = contact_phone_key(profile.phone_number)
+        if phone_key in requested:
+            matches.append({
+                'phone_key': phone_key,
+                'person': user_data(profile.user, request),
+            })
+    return JsonResponse({'matches': matches})
 
 @csrf_exempt
 @api_login_required
@@ -374,7 +420,6 @@ def mobile_chat(request, username):
         else: sent,created=Message.objects.create(sender=request.user,receiver=other,message=text,attachment=file,reply_to=reply_to),True
         if sent.receiver_id != other.pk: return JsonResponse({'error':'Client message ID already belongs to another conversation.'},status=409)
         if created:
-            notify(other,request.user,'message',f'New message from {request.user.username}',f'/chat/{request.user.username}')
             event={'kind':'direct','id':sent.pk,'client_id':str(client_id or ''),'sender':request.user.username,'sender_id':request.user.pk,'recipient':other.username,'message':sent.message or '', 'timestamp':sent.timestamp.isoformat(),'is_delivered':False}
             emit(f'user_{other.pk}','chat.event',event)
             emit(f'user_{request.user.pk}','chat.event',event)
@@ -491,12 +536,24 @@ def mobile_groups(request):
         ids=data.get('member_ids',[])
         if isinstance(ids,list): group.members.add(*User.objects.filter(id__in=ids,is_active=True))
         return JsonResponse({'group':group_data(group,request.user)},status=201)
-    groups=Group.objects.filter(members=request.user).annotate(member_count=Count('members')).order_by('-created_at')
+    groups=(
+        Group.objects.filter(members=request.user)
+        .annotate(
+            member_count=Count('members', distinct=True),
+            last_activity=Max('messages__timestamp'),
+        )
+        .order_by(F('last_activity').desc(nulls_last=True), '-created_at')
+    )
     return JsonResponse({'groups':[group_data(g,request.user) for g in groups]})
 
 def group_data(group,user):
     last=group.messages.order_by('-timestamp').first()
-    return {'id':group.id,'name':group.name,'icon':media_url(None,group.icon),'admin_id':group.admin_id,'is_admin':group.admin_id==user.pk,'member_count':group.members.count(),'last_message':(last.message or 'Attachment') if last else '', 'last_message_at':last.timestamp.isoformat() if last else ''}
+    unread = GroupMessageReceipt.objects.filter(
+        message__group=group,
+        user=user,
+        seen_at__isnull=True,
+    ).count()
+    return {'id':group.id,'name':group.name,'icon':media_url(None,group.icon),'admin_id':group.admin_id,'is_admin':group.admin_id==user.pk,'member_count':group.members.count(),'last_message':(last.message or 'Attachment') if last else '', 'last_message_at':last.timestamp.isoformat() if last else '', 'unread':unread}
 
 @csrf_exempt
 @api_login_required
@@ -517,8 +574,6 @@ def mobile_group_chat(request, group_id):
             now=timezone.now()
             for member in group.members.exclude(pk=request.user.pk): GroupMessageReceipt.objects.get_or_create(message=msg,user=member,defaults={'delivered_at':None})
             emit(f'chat_group_{group.pk}','chat.event',{'kind':'group','group_id':group.pk,'id':msg.pk,'client_id':str(client_id or ''),'sender':request.user.username,'sender_id':request.user.pk,'message':msg.message or '', 'timestamp':msg.timestamp.isoformat()})
-        if created:
-            for member in group.members.exclude(pk=request.user.pk): notify(member,request.user,'group',f'New message in {group.name}',f'/groups/{group.id}')
         return JsonResponse({'message':{'id':msg.id,'sender':msg.sender.username,'sender_id':msg.sender_id,'message':msg.message or '', 'timestamp':msg.timestamp.isoformat(),'is_me':True,'attachment':media_url(request,msg.attachment),'attachment_name':media_name(msg.attachment),'client_id':str(client_id or '')}},status=201 if created else 200)
     now=timezone.now()
     delivered_any=False
@@ -555,10 +610,37 @@ def mobile_group_members(request, group_id):
 @require_http_methods(['GET','POST'])
 def mobile_notifications(request):
     if request.method=='POST':
-        SocialNotification.objects.filter(recipient=request.user,is_read=False).update(is_read=True)
+        SocialNotification.objects.filter(
+            recipient=request.user,
+            is_read=False,
+            kind__in=('like', 'comment', 'follow', 'system'),
+        ).update(is_read=True)
         return JsonResponse({'ok':True})
-    qs=SocialNotification.objects.filter(recipient=request.user).select_related('actor')[:100]
-    return JsonResponse({'unread':SocialNotification.objects.filter(recipient=request.user,is_read=False).count(),'notifications':[{'id':n.id,'kind':n.kind,'text':n.text,'actor':n.actor.username,'created_at':n.created_at.isoformat(),'is_read':n.is_read,'target_url':n.target_url} for n in qs]})
+    feed_kinds = ('like', 'comment', 'follow', 'system')
+    notifications = SocialNotification.objects.filter(
+        recipient=request.user,
+        kind__in=feed_kinds,
+    ).select_related('actor')[:100]
+    unread = SocialNotification.objects.filter(
+        recipient=request.user,
+        is_read=False,
+        kind__in=feed_kinds,
+    ).count()
+    return JsonResponse({
+        'unread': unread,
+        'notifications': [
+            {
+                'id': n.id,
+                'kind': n.kind,
+                'text': n.text,
+                'actor': n.actor.username,
+                'created_at': n.created_at.isoformat(),
+                'is_read': n.is_read,
+                'target_url': n.target_url,
+            }
+            for n in notifications
+        ],
+    })
 
 def status_data(status, request):
     own = status.user_id == request.user.id
@@ -658,6 +740,13 @@ def mobile_profile(request, username):
         user_fields=[field for field in ('username','first_name','last_name') if field in data]
         if user_fields: person.save(update_fields=user_fields)
         profile.profile_bio=str(data.get('bio',profile.profile_bio or ''))[:500]
+        if 'phone_number' in data:
+            profile.phone_number = str(data.get('phone_number', '')).strip()[:32]
+        if 'phone_discoverable' in data:
+            wants_phone_discovery = str(data.get('phone_discoverable')).lower() in ('1', 'true', 'yes')
+            if wants_phone_discovery and not contact_phone_key(profile.phone_number):
+                return JsonResponse({'error': 'Add your phone number before enabling phone discovery.'}, status=400)
+            profile.phone_discoverable = wants_phone_discovery
         for field, limit in [('home_address',300),('relationship_status',80),('education_status',300)]:
             if field in data: setattr(profile, field, str(data[field])[:limit])
         if data.get('last_seen_privacy') in {'everyone','followers','nobody'}: profile.last_seen_privacy=data['last_seen_privacy']

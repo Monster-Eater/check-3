@@ -25,6 +25,7 @@ urlpatterns = [
     path('api/mobile/feed/<int:post_id>/seen/', mobile_api.mobile_post_seen, name='mobile_post_seen'),
     path('api/mobile/feed/<int:post_id>/like/', mobile_api.mobile_like, name='mobile_like'),
     path('api/mobile/contacts/', mobile_api.mobile_contacts, name='mobile_contacts'),
+    path('api/mobile/contact-matches/', mobile_api.mobile_contact_matches, name='mobile_contact_matches'),
     path('api/mobile/chat/<str:username>/', mobile_api.mobile_chat, name='mobile_chat'),
     path('api/mobile/chat/<str:username>/clear/', mobile_api.mobile_clear_chat, name='mobile_clear_chat'),
     path('api/mobile/chat/<str:username>/<int:message_id>/', mobile_api.mobile_message_detail, name='mobile_message_detail'),

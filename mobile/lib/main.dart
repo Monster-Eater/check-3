@@ -17,6 +17,7 @@ import 'package:image/image.dart' as img;
 import 'package:video_player/video_player.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
+import 'package:flutter_contacts/flutter_contacts.dart';
 import 'package:visibility_detector/visibility_detector.dart';
 import 'offline_outbox.dart';
 
@@ -825,6 +826,9 @@ class CampusApi {
   void _scheduleReconnect() {
     _socketReady = false;
     _socket = null;
+    if (_reconnectTimer == null) {
+      realtimeEvents.add({'type': 'connection.error'});
+    }
     _reconnectTimer ??= Timer(const Duration(seconds: 3), () { _reconnectTimer = null; connectRealtime(); });
   }
 
@@ -905,7 +909,24 @@ class ApiException implements Exception {
   String toString() => message;
 }
 
-String errorText(Object e) => e.toString().replaceFirst('Exception: ', '');
+String errorText(Object e) {
+  if (e is TimeoutException) {
+    return 'The request took too long. Check your network and try again.';
+  }
+  final raw = e.toString().replaceFirst('Exception: ', '').trim();
+  final lower = raw.toLowerCase();
+  const networkClues = [
+    'socketexception', 'clientexception', 'failed host lookup',
+    'connection refused', 'connection reset', 'network is unreachable',
+    'network request failed', 'xmlhttprequest error', 'handshakeexception',
+    'websocket', 'channels_redis', 'redis.exceptions', 'daphne', 'asgi',
+    'traceback', 'timed out',
+  ];
+  if (networkClues.any(lower.contains)) {
+    return 'Check your network connection and try again.';
+  }
+  return raw.isEmpty ? 'Something went wrong. Please try again.' : raw;
+}
 String stamp(dynamic value) {
   try {
     final d = DateTime.parse(value.toString()).toLocal();
@@ -1293,12 +1314,25 @@ class HomeShell extends StatefulWidget {
 class _HomeShellState extends State<HomeShell> {
   int tab = 0;
   int unread = 0;
+  int chatUnread = 0;
   Timer? timer;
+  StreamSubscription<Map<String, dynamic>>? realtimeSub;
   @override
   void initState() {
     super.initState();
     loadBadge();
-    timer = Timer.periodic(const Duration(seconds: 25), (_) => loadBadge());
+    loadChatBadge();
+    realtimeSub = widget.api.realtimeEvents.stream.listen((event) {
+      final type = event['type']?.toString() ?? '';
+      if (type == 'chat.message' || type == 'chat.ack' ||
+          type == 'message.seen' || type == 'group.receipt') {
+        loadChatBadge();
+      }
+    });
+    timer = Timer.periodic(const Duration(seconds: 25), (_) {
+      loadBadge();
+      loadChatBadge();
+    });
   }
 
   Future<void> loadBadge() async {
@@ -1308,9 +1342,30 @@ class _HomeShellState extends State<HomeShell> {
     } catch (_) {}
   }
 
+  Future<void> loadChatBadge() async {
+    try {
+      final results = await Future.wait([
+        widget.api.get('/api/mobile/contacts/?recent=1'),
+        widget.api.get('/api/mobile/groups/'),
+      ]);
+      final people = List<dynamic>.from(results[0]['people'] ?? []);
+      final groups = List<dynamic>.from(results[1]['groups'] ?? []);
+      final directUnread = people.fold<int>(
+        0,
+        (total, person) => total + ((person['unread'] as num?)?.toInt() ?? 0),
+      );
+      final groupUnread = groups.fold<int>(
+        0,
+        (total, group) => total + ((group['unread'] as num?)?.toInt() ?? 0),
+      );
+      if (mounted) setState(() => chatUnread = directUnread + groupUnread);
+    } catch (_) {}
+  }
+
   @override
   void dispose() {
     timer?.cancel();
+    realtimeSub?.cancel();
     super.dispose();
   }
 
@@ -1318,7 +1373,7 @@ class _HomeShellState extends State<HomeShell> {
   Widget build(BuildContext c) {
     final pages = [
       FeedScreen(api: widget.api),
-      ContactsScreen(api: widget.api),
+      ContactsScreen(api: widget.api, recentOnly: true),
       GroupsScreen(api: widget.api),
       NewsShortsScreen(api: widget.api),
     ];
@@ -1404,9 +1459,17 @@ class _HomeShellState extends State<HomeShell> {
             selectedIcon: Icon(Icons.dynamic_feed),
             label: 'Feed',
           ),
-          const NavigationDestination(
-            icon: Icon(Icons.forum_outlined),
-            selectedIcon: Icon(Icons.forum),
+          NavigationDestination(
+            icon: Badge(
+              isLabelVisible: chatUnread > 0,
+              label: Text(chatUnread > 99 ? '99+' : '$chatUnread'),
+              child: const Icon(Icons.forum_outlined),
+            ),
+            selectedIcon: Badge(
+              isLabelVisible: chatUnread > 0,
+              label: Text(chatUnread > 99 ? '99+' : '$chatUnread'),
+              child: const Icon(Icons.forum),
+            ),
             label: 'Chats',
           ),
           const NavigationDestination(
@@ -2052,8 +2115,9 @@ class _CommentsSheetState extends State<CommentsSheet> {
 }
 
 class ContactsScreen extends StatefulWidget {
-  const ContactsScreen({super.key, required this.api});
+  const ContactsScreen({super.key, required this.api, this.recentOnly = false});
   final CampusApi api;
+  final bool recentOnly;
   @override
   State<ContactsScreen> createState() => _ContactsScreenState();
 }
@@ -2065,11 +2129,20 @@ class _ContactsScreenState extends State<ContactsScreen> {
   String? error;
   Timer? debounce;
   int requestVersion = 0;
+  StreamSubscription<Map<String, dynamic>>? realtimeSub;
 
   @override
   void initState() {
     super.initState();
     load();
+    realtimeSub = widget.api.realtimeEvents.stream.listen((event) {
+      final type = event['type']?.toString() ?? '';
+      if (type == 'ready' ||
+          ((type == 'chat.message' || type == 'chat.ack') &&
+              event['kind'] == 'direct')) {
+        load();
+      }
+    });
   }
 
   void onQueryChanged(String value) {
@@ -2087,7 +2160,7 @@ class _ContactsScreenState extends State<ContactsScreen> {
       });
     try {
       final d = await widget.api.get(
-        '/api/mobile/contacts/?q=${Uri.encodeQueryComponent(q)}',
+        '/api/mobile/contacts/?q=${Uri.encodeQueryComponent(q)}&recent=${widget.recentOnly ? 1 : 0}',
       );
       if (mounted && version == requestVersion)
         setState(() => people = d['people'] ?? []);
@@ -2102,6 +2175,7 @@ class _ContactsScreenState extends State<ContactsScreen> {
   @override
   void dispose() {
     debounce?.cancel();
+    realtimeSub?.cancel();
     super.dispose();
   }
 
@@ -2110,11 +2184,37 @@ class _ContactsScreenState extends State<ContactsScreen> {
     children: [
       StatusPanel(api: widget.api),
       Padding(
+        padding: const EdgeInsets.fromLTRB(16, 4, 8, 0),
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(
+                widget.recentOnly ? 'Recent chats' : 'People',
+                style: Theme.of(c).textTheme.titleMedium?.copyWith(
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ),
+            if (widget.recentOnly)
+              IconButton(
+                tooltip: 'Find phone contacts',
+                onPressed: () => Navigator.push(
+                  c,
+                  MaterialPageRoute(
+                    builder: (_) => PhoneContactsScreen(api: widget.api),
+                  ),
+                ).then((_) => load()),
+                icon: const Icon(Icons.contacts_outlined),
+              ),
+          ],
+        ),
+      ),
+      Padding(
         padding: const EdgeInsets.fromLTRB(14, 8, 14, 10),
         child: TextField(
           onChanged: onQueryChanged,
           decoration: InputDecoration(
-            hintText: 'Search people',
+            hintText: widget.recentOnly ? 'Search chats' : 'Search people',
             prefixIcon: const Icon(Icons.search),
             filled: true,
             fillColor: Colors.white,
@@ -2139,7 +2239,13 @@ class _ContactsScreenState extends State<ContactsScreen> {
                     ? ListView(
                         children: [
                           SizedBox(height: 180),
-                          Center(child: Text('No people found')),
+                          Center(
+                            child: Text(
+                              widget.recentOnly
+                                  ? 'No chats yet. Tap the contacts icon to start one.'
+                                  : 'No people found',
+                            ),
+                          ),
                         ],
                       )
                     : ListView.separated(
@@ -2203,6 +2309,230 @@ class _ContactsScreenState extends State<ContactsScreen> {
   );
 }
 
+String _contactPhoneKey(String value) {
+  final digits = value.replaceAll(RegExp(r'[^0-9]'), '');
+  return digits.startsWith('00') ? digits.substring(2) : digits;
+}
+
+class PhoneContactsScreen extends StatefulWidget {
+  const PhoneContactsScreen({super.key, required this.api});
+  final CampusApi api;
+
+  @override
+  State<PhoneContactsScreen> createState() => _PhoneContactsScreenState();
+}
+
+class _PhoneContactsScreenState extends State<PhoneContactsScreen> {
+  List<Map<String, dynamic>> contacts = [];
+  bool loading = true;
+  String query = '';
+  String? error;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) loadContacts();
+    });
+  }
+
+  Future<void> loadContacts() async {
+    if (kIsWeb) {
+      setState(() {
+        loading = false;
+        error = 'Phone contacts are available in the Android or iOS app.';
+      });
+      return;
+    }
+
+    final consent = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Find people from your contacts'),
+        content: const Text(
+          'Campus Times will send contact phone numbers securely for a one-time match. It does not save your address book. Only accounts whose owners enabled phone discovery can match.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Continue'),
+          ),
+        ],
+      ),
+    );
+    if (!mounted) return;
+    if (consent != true) {
+      setState(() => loading = false);
+      return;
+    }
+
+    try {
+      final permission = await FlutterContacts.permissions.request(
+        PermissionType.read,
+      );
+      if (permission != PermissionStatus.granted) {
+        throw Exception('Allow contact access to match your phone contacts.');
+      }
+
+      final deviceContacts = await FlutterContacts.getAll(
+        properties: {ContactProperty.name, ContactProperty.phone},
+      );
+      final rows = <Map<String, dynamic>>[];
+      final lookupKeys = <String>{};
+      for (final contact in deviceContacts) {
+        final displayName = (contact.displayName ?? '').trim();
+        for (final phone in contact.phones) {
+          final rawNumber = phone.normalizedNumber?.trim().isNotEmpty == true
+              ? phone.normalizedNumber!.trim()
+              : phone.number.trim();
+          final phoneKey = _contactPhoneKey(rawNumber);
+          if (phoneKey.length < 7) continue;
+          lookupKeys.add(phoneKey);
+          rows.add({
+            'name': displayName.isEmpty ? rawNumber : displayName,
+            'number': rawNumber,
+            'phone_key': phoneKey,
+          });
+        }
+      }
+
+      final matches = <String, dynamic>{};
+      final keys = lookupKeys.toList();
+      for (var start = 0; start < keys.length; start += 500) {
+        final end = start + 500 < keys.length ? start + 500 : keys.length;
+        final response = await widget.api.post(
+          '/api/mobile/contact-matches/',
+          {'numbers': keys.sublist(start, end)},
+        );
+        for (final match in (response['matches'] as List? ?? const [])) {
+          final key = match['phone_key']?.toString();
+          if (key != null && match['person'] is Map) {
+            matches[key] = Map<String, dynamic>.from(match['person'] as Map);
+          }
+        }
+      }
+
+      for (final row in rows) {
+        row['person'] = matches[row['phone_key']];
+      }
+      rows.sort((a, b) =>
+          (a['name'] as String).toLowerCase().compareTo(
+            (b['name'] as String).toLowerCase(),
+          ));
+      if (mounted) setState(() => contacts = rows);
+    } catch (e) {
+      if (mounted) setState(() => error = errorText(e));
+    } finally {
+      if (mounted) setState(() => loading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final visible = contacts.where((contact) {
+      final text = '${contact['name']} ${contact['number']} '
+          '${(contact['person'] as Map?)?['username'] ?? ''}'.toLowerCase();
+      return text.contains(query.toLowerCase());
+    }).toList();
+
+    return Scaffold(
+      appBar: AppBar(title: const Text('Phone contacts')),
+      body: loading
+          ? const Center(child: CircularProgressIndicator())
+          : error != null
+          ? Center(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(error!, textAlign: TextAlign.center),
+                    const SizedBox(height: 12),
+                    FilledButton(
+                      onPressed: () {
+                        setState(() {
+                          loading = true;
+                          error = null;
+                        });
+                        loadContacts();
+                      },
+                      child: const Text('Try again'),
+                    ),
+                  ],
+                ),
+              ),
+            )
+          : Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.all(14),
+                  child: TextField(
+                    onChanged: (value) => setState(() => query = value),
+                    decoration: InputDecoration(
+                      hintText: 'Search name or phone number',
+                      prefixIcon: const Icon(Icons.search),
+                      filled: true,
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(16),
+                        borderSide: BorderSide.none,
+                      ),
+                    ),
+                  ),
+                ),
+                Expanded(
+                  child: visible.isEmpty
+                      ? const Center(child: Text('No phone contacts found'))
+                      : ListView.separated(
+                          itemCount: visible.length,
+                          separatorBuilder: (_, __) =>
+                              const Divider(height: 1, indent: 72),
+                          itemBuilder: (context, index) {
+                            final contact = visible[index];
+                            final person = contact['person'] as Map?;
+                            final username = person?['username']?.toString();
+                            final avatar = person?['avatar']?.toString() ?? '';
+                            return ListTile(
+                              leading: UserAvatar(
+                                url: avatar,
+                                username: username ?? contact['name'],
+                              ),
+                              title: Text(contact['name']),
+                              subtitle: Text(
+                                person == null
+                                    ? '${contact['number']} · Not on Campus Times'
+                                    : '${contact['number']} · @${person['username']}',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                              trailing: person == null
+                                  ? const Icon(Icons.person_outline)
+                                  : const Icon(Icons.chat_bubble_outline),
+                              enabled: person != null,
+                              onTap: person == null
+                                  ? null
+                                  : () => Navigator.push(
+                                        context,
+                                        MaterialPageRoute(
+                                          builder: (_) => ChatScreen(
+                                            api: widget.api,
+                                            person: person,
+                                          ),
+                                        ),
+                                      ),
+                            );
+                          },
+                        ),
+                ),
+              ],
+            ),
+    );
+  }
+}
+
 class ChatScreen extends StatefulWidget {
   const ChatScreen({super.key, required this.api, required this.person});
   final CampusApi api;
@@ -2224,6 +2554,7 @@ class _ChatScreenState extends State<ChatScreen> {
   String? error;
   StreamSubscription<Map<String, dynamic>>? realtimeSub;
   Timer? typingTimer;
+  bool typingPresenceSent = false;
   String get path =>
       '/api/mobile/chat/${Uri.encodeComponent(widget.person['username'])}/';
   @override
@@ -2232,6 +2563,9 @@ class _ChatScreenState extends State<ChatScreen> {
     load();
     realtimeSub = widget.api.realtimeEvents.stream.listen((event) {
       final type = event['type']?.toString() ?? '';
+      if (type == 'connection.error' && mounted) {
+        setState(() => error = 'Chat connection unavailable. Check your network and try again.');
+      }
       if (type == 'ready') { load(silent:true); widget.api.markDirectSeen(widget.person['username'].toString()); }
       if (type == 'chat.message' || type == 'chat.ack' || type == 'message.seen' || type == 'message.delivered' || type == 'message.receipt') {
         final peer = widget.person['username'].toString();
@@ -2275,7 +2609,6 @@ class _ChatScreenState extends State<ChatScreen> {
       final clientId=widget.api.newClientId();
       await widget.api.queueRealtime({'type':'direct.send','client_id':clientId,'username':widget.person['username'],'message':t,if(replyTo!=null)'reply_to_id':replyTo!['id']}, path:path, fields:{'client_id':clientId,'message':t,if(replyTo!=null)'reply_to_id':replyTo!['id']});
       replyTo = null;
-      await load();
     } catch (e) {
       if (mounted) {
         input.text = t;
@@ -2498,13 +2831,22 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void typingChanged(String value) {
-    sendPresence(value.isNotEmpty);
     typingTimer?.cancel();
     if (value.isNotEmpty) {
+      if (!typingPresenceSent) {
+        typingPresenceSent = true;
+        sendPresence(true);
+      }
       typingTimer = Timer(
         const Duration(seconds: 5),
-        () => sendPresence(false),
+        () {
+          typingPresenceSent = false;
+          sendPresence(false);
+        },
       );
+    } else if (typingPresenceSent) {
+      typingPresenceSent = false;
+      sendPresence(false);
     }
   }
 
@@ -2521,30 +2863,42 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   Widget build(BuildContext c) => Scaffold(
     appBar: AppBar(
-      title: Row(
-        children: [
-          UserAvatar(
-            url: (currentPerson ?? widget.person)['avatar'] ?? '',
-            username: widget.person['username'],
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(widget.person['full_name'] ?? widget.person['username']),
-                Text(
-                  typing
-                      ? 'typing…'
-                      : online
-                      ? 'online'
-                      : lastSeen.isNotEmpty ? 'last seen ${stamp(lastSeen)}' : 'offline',
-                  style: Theme.of(c).textTheme.labelSmall,
-                ),
-              ],
+      title: InkWell(
+        borderRadius: BorderRadius.circular(20),
+        onTap: () => Navigator.push(
+          c,
+          MaterialPageRoute(
+            builder: (_) => ProfileScreen(
+              api: widget.api,
+              username: widget.person['username'].toString(),
             ),
           ),
-        ],
+        ),
+        child: Row(
+          children: [
+            UserAvatar(
+              url: (currentPerson ?? widget.person)['avatar'] ?? '',
+              username: widget.person['username'],
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(widget.person['full_name'] ?? widget.person['username']),
+                  Text(
+                    typing
+                        ? 'typing…'
+                        : online
+                        ? 'online'
+                        : lastSeen.isNotEmpty ? 'last seen ${stamp(lastSeen)}' : 'offline',
+                    style: Theme.of(c).textTheme.labelSmall,
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
       ),
       actions: [PopupMenuButton<String>(onSelected: (v) { if (v == 'clear') clearChat(); }, itemBuilder: (_) => const [PopupMenuItem(value: 'clear', child: Text('Delete chat'))])],
     ),
@@ -2697,10 +3051,18 @@ class GroupsScreen extends StatefulWidget {
 class _GroupsScreenState extends State<GroupsScreen> {
   List groups = [];
   bool loading = true;
+  StreamSubscription<Map<String, dynamic>>? realtimeSub;
   @override
   void initState() {
     super.initState();
     load();
+    realtimeSub = widget.api.realtimeEvents.stream.listen((event) {
+      final type = event['type']?.toString() ?? '';
+      if (type == 'ready' ||
+          (type == 'chat.message' && event['kind'] == 'group')) {
+        load();
+      }
+    });
   }
 
   Future<void> load() async {
@@ -2720,6 +3082,12 @@ class _GroupsScreenState extends State<GroupsScreen> {
       builder: (_) => CreateGroupDialog(api: widget.api),
     );
     if (made == true) load();
+  }
+
+  @override
+  void dispose() {
+    realtimeSub?.cancel();
+    super.dispose();
   }
 
   @override
@@ -2908,7 +3276,18 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     realtimeSub=widget.api.realtimeEvents.stream.listen((event){
       final type=event['type']?.toString()??'';
       if(type=='ready'){widget.api.subscribeGroup(groupId);load();}
-      if(type=='chat.message'&&event['kind']=='group'&&event['group_id']==groupId||type=='group.receipt'&&event['group_id']==groupId){load();widget.api.markGroupSeen(groupId);}
+      final isGroupMessage =
+          event['kind'] == 'group' && event['group_id'] == groupId;
+      final isIncomingGroupMessage =
+          type == 'chat.message' &&
+          isGroupMessage &&
+          event['sender'] != widget.api.activeUsername;
+      if (type == 'chat.ack' && isGroupMessage ||
+          isIncomingGroupMessage ||
+          type == 'group.receipt' && event['group_id'] == groupId) {
+        load();
+        widget.api.markGroupSeen(groupId);
+      }
     });
   }
 
@@ -2937,7 +3316,6 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       final clientId=widget.api.newClientId();
       await widget.api.queueRealtime({'type':'group.send','client_id':clientId,'group_id':widget.group['id'],'message':t,if(replyTo!=null)'reply_to_id':replyTo!['id']}, path:path, fields:{'client_id':clientId,'message':t,if(replyTo!=null)'reply_to_id':replyTo!['id']});
       replyTo = null;
-      await load();
     } catch (e) {
       input.text = t;
       if (mounted) snack(context, errorText(e));
@@ -3383,8 +3761,17 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
   }
 
   @override
-  Widget build(BuildContext c) => Scaffold(
-    backgroundColor: Colors.transparent,
+  Widget build(BuildContext c) {
+    final colors = Theme.of(c).colorScheme;
+    return Scaffold(
+    backgroundColor: colors.surface,
+    appBar: AppBar(
+      title: const Text('Notifications'),
+      actions: [
+        if (!loading && items.any((item) => item['is_read'] != true))
+          TextButton(onPressed: readAll, child: const Text('Mark all read')),
+      ],
+    ),
     body: loading
         ? const Center(child: CircularProgressIndicator())
         : RefreshIndicator(
@@ -3397,44 +3784,54 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                     ],
                   )
                 : ListView(
-                    children: [
-                      Align(
-                        alignment: Alignment.centerRight,
-                        child: TextButton(
-                          onPressed: readAll,
-                          child: const Text('Mark all read'),
+                    padding: const EdgeInsets.symmetric(vertical: 8),
+                    children: items.map((n) {
+                      final isRead = n['is_read'] == true;
+                      final icon = n['kind'] == 'like'
+                          ? Icons.favorite
+                          : n['kind'] == 'comment'
+                          ? Icons.mode_comment
+                          : n['kind'] == 'follow'
+                          ? Icons.person_add_alt_1
+                          : Icons.notifications_active_outlined;
+                      return Card(
+                        margin: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 5,
                         ),
-                      ),
-                      ...items.map(
-                        (n) => ListTile(
+                        color: isRead
+                            ? colors.surfaceContainerHighest
+                            : colors.primaryContainer.withValues(alpha: .55),
+                        child: ListTile(
                           leading: CircleAvatar(
-                            backgroundColor: n['is_read'] == true
-                                ? Colors.grey.shade200
-                                : const Color(0xffeeeeee),
+                            backgroundColor: colors.surface,
                             child: Icon(
-                              n['kind'] == 'like'
-                                  ? Icons.favorite
-                                  : n['kind'] == 'comment'
-                                  ? Icons.mode_comment
-                                  : n['kind'] == 'message'
-                                  ? Icons.chat
-                                  : Icons.notifications,
-                              color: n['kind'] == 'like' ? Colors.pink : brand,
+                              icon,
+                              color: n['kind'] == 'like'
+                                  ? Colors.pink
+                                  : colors.primary,
                             ),
                           ),
-                          title: Text(n['text']),
+                          title: Text(
+                            n['text']?.toString() ?? 'New activity',
+                            style: TextStyle(
+                              color: colors.onSurface,
+                              fontWeight: isRead
+                                  ? FontWeight.w500
+                                  : FontWeight.w700,
+                            ),
+                          ),
                           subtitle: Text(
                             '${n['actor']} · ${stamp(n['created_at'])}',
+                            style: TextStyle(color: colors.onSurfaceVariant),
                           ),
-                          tileColor: n['is_read'] == true
-                              ? null
-                              : brand.withValues(alpha: .05),
                         ),
-                      ),
-                    ],
+                      );
+                    }).toList(),
                   ),
           ),
   );
+  }
 }
 
 class SearchScreen extends StatefulWidget {
@@ -3605,6 +4002,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
       'first_name',
       'last_name',
       'bio',
+      'phone_number',
       'home_address',
       'relationship_status',
       'education_status',
@@ -3613,6 +4011,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
       'First name',
       'Last name',
       'Bio',
+      'Phone number (include country code)',
       'Home address',
       'Relationship status',
       'Education / studies',
@@ -3680,11 +4079,13 @@ class _ProfileScreenState extends State<ProfileScreen> {
     String lastSeen=(profile['last_seen_privacy']??'everyone').toString();
     String status=(profile['status_privacy']??'everyone').toString();
     bool receipts=profile['read_receipts']!=false;
+    bool phoneDiscoverable=profile['phone_discoverable']==true;
     final result=await showDialog<Map<String,dynamic>>(context:context,builder:(ctx)=>StatefulBuilder(builder:(ctx,setDialog)=>AlertDialog(title:const Text('Privacy settings'),content:Column(mainAxisSize:MainAxisSize.min,children:[
       DropdownButtonFormField<String>(value:lastSeen,decoration:const InputDecoration(labelText:'Last seen'),items:const [DropdownMenuItem(value:'everyone',child:Text('Everyone')),DropdownMenuItem(value:'followers',child:Text('Followers')),DropdownMenuItem(value:'nobody',child:Text('Nobody'))],onChanged:(v){if(v!=null)setDialog(()=>lastSeen=v);}),
       DropdownButtonFormField<String>(value:status,decoration:const InputDecoration(labelText:'Status privacy'),items:const [DropdownMenuItem(value:'everyone',child:Text('Everyone')),DropdownMenuItem(value:'followers',child:Text('Followers')),DropdownMenuItem(value:'nobody',child:Text('Nobody'))],onChanged:(v){if(v!=null)setDialog(()=>status=v);}),
       SwitchListTile(contentPadding:EdgeInsets.zero,title:const Text('Read receipts'),value:receipts,onChanged:(v)=>setDialog(()=>receipts=v)),
-    ]),actions:[TextButton(onPressed:()=>Navigator.pop(ctx),child:const Text('Cancel')),FilledButton(onPressed:()=>Navigator.pop(ctx,{'last_seen_privacy':lastSeen,'status_privacy':status,'read_receipts':receipts}),child:const Text('Save'))])));
+      SwitchListTile(contentPadding:EdgeInsets.zero,title:const Text('Let phone contacts find me'),subtitle:const Text('Requires a phone number in your profile.'),value:phoneDiscoverable,onChanged:(v)=>setDialog(()=>phoneDiscoverable=v)),
+    ]),actions:[TextButton(onPressed:()=>Navigator.pop(ctx),child:const Text('Cancel')),FilledButton(onPressed:()=>Navigator.pop(ctx,{'last_seen_privacy':lastSeen,'status_privacy':status,'read_receipts':receipts,'phone_discoverable':phoneDiscoverable}),child:const Text('Save'))])));
     if(result==null||!mounted)return;
     try{await widget.api.post('/api/mobile/profile/${Uri.encodeComponent(username)}/',result);await load();}catch(e){if(mounted)snack(context,errorText(e));}
   }
@@ -3817,6 +4218,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
             ),
             for (final entry in {
               'bio': 'Bio',
+              if (mine) 'phone_number': 'Phone',
               'home_address': 'Home address',
               'relationship_status': 'Relationship',
               'education_status': 'Studies',

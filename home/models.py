@@ -88,6 +88,8 @@ class Profile(models.Model):
     home_address = models.CharField(max_length=300, blank=True, default="")
     relationship_status = models.CharField(max_length=80, blank=True, default="")
     education_status = models.CharField(max_length=300, blank=True, default="")
+    phone_number = models.CharField(max_length=32, blank=True, default="")
+    phone_discoverable = models.BooleanField(default=False)
     homepage_link = models.CharField(null=True, blank=True, max_length=200)
     facebook_link = models.CharField(null=True, blank=True, max_length=200)
     instagram_link = models.CharField(null=True, blank=True, max_length=200)
