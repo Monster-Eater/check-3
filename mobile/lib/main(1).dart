@@ -2567,14 +2567,99 @@ class _ChatScreenState extends State<ChatScreen> {
         setState(() => error = 'Chat connection unavailable. Check your network and try again.');
       }
       if (type == 'ready') { load(silent:true); widget.api.markDirectSeen(widget.person['username'].toString()); }
-      if (type == 'chat.message' || type == 'chat.ack' || type == 'message.seen' || type == 'message.delivered' || type == 'message.receipt') {
-        final peer = widget.person['username'].toString();
-        if (event['kind'] == 'direct' && (event['sender'] == peer || event['recipient'] == peer) || type == 'message.seen' || type == 'message.delivered') {
-          load(silent:true);
-          widget.api.markDirectSeen(peer);
+      final peer = widget.person['username'].toString();
+      final belongsToThisChat = event['kind'] == 'direct' &&
+          (event['sender'] == peer || event['recipient'] == peer);
+      if ((type == 'chat.message' || type == 'chat.ack') && belongsToThisChat) {
+        _mergeRealtimeMessage(event);
+        if (event['sender'] == peer) widget.api.markDirectSeen(peer);
+      } else if (type == 'message.receipt' && event['username'] == peer) {
+        if (mounted) {
+          setState(() {
+            messages = messages.map((item) {
+              final message = Map<String, dynamic>.from(item);
+              if (message['is_me'] == true) message['is_read'] = true;
+              return message;
+            }).toList();
+          });
+        }
+      } else if (type == 'message.delivered' && event['message_id'] != null) {
+        if (mounted) {
+          setState(() {
+            messages = messages.map((item) {
+              final message = Map<String, dynamic>.from(item);
+              if (message['id']?.toString() == event['message_id'].toString()) {
+                message['is_delivered'] = true;
+              }
+              return message;
+            }).toList();
+          });
         }
       }
     });
+  }
+
+  void _mergeRealtimeMessage(Map<String, dynamic> event) {
+    if (event['id'] == null) return;
+    final live = <String, dynamic>{
+      'id': event['id'],
+      'client_id': event['client_id'],
+      'sender': event['sender'] ?? '',
+      'sender_id': event['sender_id'],
+      'recipient': event['recipient'],
+      'message': event['message'] ?? '',
+      'timestamp': event['timestamp'],
+      'is_me': event['sender'] == widget.api.activeUsername,
+      'is_read': event['is_read'] == true,
+      'is_delivered': event['is_delivered'] == true,
+      'is_pending': false,
+      'attachment': '',
+      'attachment_name': '',
+      'reply_to': event['reply_to'] ?? '',
+    };
+    final existing = messages.indexWhere((item) =>
+        item['id']?.toString() == live['id'].toString() ||
+        (live['client_id'] != null &&
+            item['client_id']?.toString() == live['client_id'].toString()));
+    if (!mounted) return;
+    setState(() {
+      if (existing >= 0) {
+        messages[existing] = {...Map<String, dynamic>.from(messages[existing]), ...live};
+      } else {
+        messages = [...messages, live];
+      }
+    });
+  }
+
+  void _addPendingTextMessage(String clientId, String text) {
+    if (!mounted) return;
+    setState(() {
+      messages = [
+        ...messages,
+        {
+          'id': 'pending:$clientId',
+          'client_id': clientId,
+          'sender': widget.api.activeUsername ?? '',
+          'recipient': widget.person['username'],
+          'message': text,
+          'timestamp': DateTime.now().toUtc().toIso8601String(),
+          'is_me': true,
+          'is_read': false,
+          'is_delivered': false,
+          'is_pending': true,
+          'attachment': '',
+          'attachment_name': '',
+          'reply_to': replyTo?['message'] ?? '',
+        },
+      ];
+    });
+  }
+
+  void _removePendingTextMessage(String clientId) {
+    if (!mounted) return;
+    setState(() => messages = messages
+        .where((item) => item['client_id']?.toString() != clientId)
+        .toList());
   }
 
   Future<void> load({bool silent = false}) async {
@@ -2605,11 +2690,13 @@ class _ChatScreenState extends State<ChatScreen> {
     if ((t.isEmpty) || sending) return;
     input.clear();
     setState(() => sending = true);
+    final clientId = widget.api.newClientId();
+    _addPendingTextMessage(clientId, t);
     try {
-      final clientId=widget.api.newClientId();
       await widget.api.queueRealtime({'type':'direct.send','client_id':clientId,'username':widget.person['username'],'message':t,if(replyTo!=null)'reply_to_id':replyTo!['id']}, path:path, fields:{'client_id':clientId,'message':t,if(replyTo!=null)'reply_to_id':replyTo!['id']});
       replyTo = null;
     } catch (e) {
+      _removePendingTextMessage(clientId);
       if (mounted) {
         input.text = t;
         snack(context, errorText(e));
@@ -2904,6 +2991,7 @@ class _ChatScreenState extends State<ChatScreen> {
     ),
     body: Column(
       children: [
+        StatusPanel(api: widget.api),
         if (error != null)
           Material(
             color: Colors.red.shade50,
@@ -2972,7 +3060,7 @@ class _ChatScreenState extends State<ChatScreen> {
                                 mimeType: (m['attachment_mime_type'] ?? m['mime_type'] ?? m['content_type'] ?? '').toString(),
                               ),
                             Text(
-                              '${m['edited_at'] != null && m['edited_at'] != '' ? 'edited · ' : ''}${stamp(m['timestamp'])}${mine ? (m['is_read'] == true ? '  ✓✓ Seen' : m['is_delivered'] == true ? '  ✓✓ Delivered' : '  ✓ Sent') : ''}',
+                              '${m['edited_at'] != null && m['edited_at'] != '' ? 'edited · ' : ''}${stamp(m['timestamp'])}${mine ? (m['is_pending'] == true ? '  Sending…' : m['is_read'] == true ? '  ✓✓ Seen' : m['is_delivered'] == true ? '  ✓✓ Delivered' : '  ✓ Sent') : ''}',
                               style: TextStyle(
                                 fontSize: 10,
                                 color: mine && m['is_read'] == true ? Colors.blue : Colors.black54,
@@ -3098,49 +3186,56 @@ class _GroupsScreenState extends State<GroupsScreen> {
       icon: const Icon(Icons.group_add),
       label: const Text('New group'),
     ),
-    body: loading
-        ? const Center(child: CircularProgressIndicator())
-        : RefreshIndicator(
-            onRefresh: load,
-            child: groups.isEmpty
-                ? ListView(
-                    children: [
-                      SizedBox(height: 180),
-                      Center(child: Text('No groups yet. Create one!')),
-                    ],
-                  )
-                : ListView.separated(
-                    padding: const EdgeInsets.only(bottom: 90),
-                    itemCount: groups.length,
-                    separatorBuilder: (_, __) =>
-                        const Divider(height: 1, indent: 74),
-                    itemBuilder: (_, i) {
-                      final g = groups[i];
-                      return ListTile(
-                        leading: const CircleAvatar(
-                          backgroundColor: Color(0xffeeeeee),
-                          child: Icon(Icons.groups, color: brand),
+    body: Column(
+      children: [
+        StatusPanel(api: widget.api),
+        Expanded(
+          child: loading
+              ? const Center(child: CircularProgressIndicator())
+              : RefreshIndicator(
+                  onRefresh: load,
+                  child: groups.isEmpty
+                      ? ListView(
+                          children: [
+                            SizedBox(height: 180),
+                            Center(child: Text('No groups yet. Create one!')),
+                          ],
+                        )
+                      : ListView.separated(
+                          padding: const EdgeInsets.only(bottom: 90),
+                          itemCount: groups.length,
+                          separatorBuilder: (_, __) =>
+                              const Divider(height: 1, indent: 74),
+                          itemBuilder: (_, i) {
+                            final g = groups[i];
+                            return ListTile(
+                              leading: const CircleAvatar(
+                                backgroundColor: Color(0xffeeeeee),
+                                child: Icon(Icons.groups, color: brand),
+                              ),
+                              title: Text(
+                                g['name'],
+                                style: const TextStyle(fontWeight: FontWeight.w700),
+                              ),
+                              subtitle: Text(
+                                '${g['member_count']} members · ${g['last_message'] ?? 'Start a conversation'}',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                              onTap: () => Navigator.push(
+                                c,
+                                MaterialPageRoute(
+                                  builder: (_) =>
+                                      GroupChatScreen(api: widget.api, group: g),
+                                ),
+                              ).then((_) => load()),
+                            );
+                          },
                         ),
-                        title: Text(
-                          g['name'],
-                          style: const TextStyle(fontWeight: FontWeight.w700),
-                        ),
-                        subtitle: Text(
-                          '${g['member_count']} members · ${g['last_message'] ?? 'Start a conversation'}',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                        onTap: () => Navigator.push(
-                          c,
-                          MaterialPageRoute(
-                            builder: (_) =>
-                                GroupChatScreen(api: widget.api, group: g),
-                          ),
-                        ).then((_) => load()),
-                      );
-                    },
-                  ),
-          ),
+                ),
+        ),
+      ],
+    ),
   );
 }
 
@@ -3282,19 +3377,78 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
           type == 'chat.message' &&
           isGroupMessage &&
           event['sender'] != widget.api.activeUsername;
-      if (type == 'chat.ack' && isGroupMessage ||
-          isIncomingGroupMessage ||
-          type == 'group.receipt' && event['group_id'] == groupId) {
-        load();
-        widget.api.markGroupSeen(groupId);
+      if ((type == 'chat.ack' || type == 'chat.message') && isGroupMessage) {
+        _mergeRealtimeMessage(event);
+        if (isIncomingGroupMessage) widget.api.markGroupSeen(groupId);
+      } else if (type == 'group.receipt' && event['group_id'] == groupId) {
+        // Receipts change independently of message content; refresh them once
+        // without sending another seen command back to the group.
+        load(markSeen: false);
       }
     });
   }
 
-  Future<void> load() async {
+  void _mergeRealtimeMessage(Map<String, dynamic> event) {
+    if (event['id'] == null) return;
+    final live = <String, dynamic>{
+      'id': event['id'],
+      'client_id': event['client_id'],
+      'sender': event['sender'] ?? '',
+      'sender_id': event['sender_id'],
+      'message': event['message'] ?? '',
+      'timestamp': event['timestamp'],
+      'is_me': event['sender'] == widget.api.activeUsername,
+      'is_pending': false,
+      'attachment': '',
+      'attachment_name': '',
+      'reply_to': event['reply_to'] ?? '',
+    };
+    final existing = messages.indexWhere((item) =>
+        item['id']?.toString() == live['id'].toString() ||
+        (live['client_id'] != null &&
+            item['client_id']?.toString() == live['client_id'].toString()));
+    if (!mounted) return;
+    setState(() {
+      if (existing >= 0) {
+        messages[existing] = {...Map<String, dynamic>.from(messages[existing]), ...live};
+      } else {
+        messages = [...messages, live];
+      }
+    });
+  }
+
+  void _addPendingTextMessage(String clientId, String text) {
+    if (!mounted) return;
+    setState(() {
+      messages = [
+        ...messages,
+        {
+          'id': 'pending:$clientId',
+          'client_id': clientId,
+          'sender': widget.api.activeUsername ?? '',
+          'message': text,
+          'timestamp': DateTime.now().toUtc().toIso8601String(),
+          'is_me': true,
+          'is_pending': true,
+          'attachment': '',
+          'attachment_name': '',
+          'reply_to': replyTo?['message'] ?? '',
+        },
+      ];
+    });
+  }
+
+  void _removePendingTextMessage(String clientId) {
+    if (!mounted) return;
+    setState(() => messages = messages
+        .where((item) => item['client_id']?.toString() != clientId)
+        .toList());
+  }
+
+  Future<void> load({bool markSeen = true}) async {
     try {
       final d = await widget.api.get(path);
-      widget.api.markGroupSeen(widget.group['id'] as int);
+      if (markSeen) widget.api.markGroupSeen(widget.group['id'] as int);
       if (mounted)
         setState(() {
           messages = d['messages'] ?? [];
@@ -3312,11 +3466,13 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     if (t.isEmpty || sending) return;
     input.clear();
     setState(() => sending = true);
+    final clientId = widget.api.newClientId();
+    _addPendingTextMessage(clientId, t);
     try {
-      final clientId=widget.api.newClientId();
       await widget.api.queueRealtime({'type':'group.send','client_id':clientId,'group_id':widget.group['id'],'message':t,if(replyTo!=null)'reply_to_id':replyTo!['id']}, path:path, fields:{'client_id':clientId,'message':t,if(replyTo!=null)'reply_to_id':replyTo!['id']});
       replyTo = null;
     } catch (e) {
+      _removePendingTextMessage(clientId);
       input.text = t;
       if (mounted) snack(context, errorText(e));
     } finally {
@@ -3612,6 +3768,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     ),
     body: Column(
       children: [
+        StatusPanel(api: widget.api),
         Expanded(
           child: loading
               ? const Center(child: CircularProgressIndicator())
@@ -3660,7 +3817,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                                 mimeType: (m['attachment_mime_type'] ?? m['mime_type'] ?? m['content_type'] ?? '').toString(),
                               ),
                             Text(
-                              '${stamp(m['timestamp'])}${m['is_me'] == true ? (m['is_read'] == true ? '  ✓✓ Seen' : m['is_delivered'] == true ? '  ✓✓ Delivered' : '  ✓ Sent') : ''}',
+                              '${stamp(m['timestamp'])}${m['is_me'] == true ? (m['is_pending'] == true ? '  Sending…' : m['is_read'] == true ? '  ✓✓ Seen' : m['is_delivered'] == true ? '  ✓✓ Delivered' : '  ✓ Sent') : ''}',
                               style: TextStyle(
                                 fontSize: 10,
                                 color: m['is_me'] == true && m['is_read'] == true ? Colors.blue : Colors.black54,
