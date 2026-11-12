@@ -88,13 +88,35 @@ TEMPLATES = [
 WSGI_APPLICATION = 'pr_campus_times.wsgi.application'
 ASGI_APPLICATION = 'pr_campus_times.asgi.application'
 
-REDIS_URL = os.environ.get('REDIS_URL', '').strip()
+REDIS_URL = os.environ.get("REDIS_URL", "").strip()
+
 if REDIS_URL:
-    CHANNEL_LAYERS = {'default': {'BACKEND': 'channels_redis.core.RedisChannelLayer', 'CONFIG': {'hosts': [REDIS_URL], 'capacity': 500, 'expiry': 60}}}
+    CHANNEL_LAYERS = {
+        "default": {
+            "BACKEND": "channels_redis.core.RedisChannelLayer",
+            "CONFIG": {
+                "hosts": [
+                    {
+                        "address": REDIS_URL,
+                        "socket_timeout": None,
+                    }
+                ],
+                "capacity": 500,
+                "expiry": 60,
+            },
+        },
+    }
 elif DEBUG:
-    CHANNEL_LAYERS = {'default': {'BACKEND': 'channels.layers.InMemoryChannelLayer'}}
+    CHANNEL_LAYERS = {
+        "default": {
+            "BACKEND": "channels.layers.InMemoryChannelLayer",
+        },
+    }
 else:
-    raise ImproperlyConfigured('Set REDIS_URL to a Render Key Value internal URL for WebSocket messaging.')
+    raise ImproperlyConfigured(
+        "Set REDIS_URL to a Render Key Value internal URL for WebSocket messaging."
+    )
+    
 
 
 # Database
