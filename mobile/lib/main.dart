@@ -1329,10 +1329,10 @@ class _HomeShellState extends State<HomeShell> {
         loadChatBadge();
       }
     });
-    timer = Timer.periodic(const Duration(seconds: 25), (_) {
-      loadBadge();
-      loadChatBadge();
-    });
+    timer = Timer.periodic(const Duration(minutes: 1), (_) {
+  loadBadge();
+  loadChatBadge();
+});
   }
 
   Future<void> loadBadge() async {

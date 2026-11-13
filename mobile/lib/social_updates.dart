@@ -398,7 +398,7 @@ class _StatusPanelState extends State<StatusPanel> {
   void initState() {
     super.initState();
     load();
-    timer = Timer.periodic(const Duration(seconds: 30), (_) => load());
+    timer = Timer.periodic(const Duration(minutes: 2), (_) => load());
   }
 
   @override
