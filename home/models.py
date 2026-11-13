@@ -77,6 +77,7 @@ class Profile(models.Model):
 
     date_modified = models.DateTimeField(User, auto_now = True)
     profile_image = models.ImageField(null = True, blank = True, upload_to = 'profile-images/')
+    cover_image = models.ImageField(null=True, blank=True, upload_to='profile-covers/')
     profile_bio = models.CharField(null=True, blank=True, max_length=500)
     home_address = models.CharField(max_length=300, blank=True, default="")
     relationship_status = models.CharField(max_length=80, blank=True, default="")

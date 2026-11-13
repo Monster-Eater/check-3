@@ -20,6 +20,7 @@ urlpatterns = [
     path('api/mobile/change-password/', mobile_api.mobile_change_password),
     path('api/mobile/complaints/', mobile_api.mobile_complaints),
     path('api/mobile/news-shorts/', mobile_api.mobile_news_shorts, name='mobile_news_shorts'),
+    path('api/mobile/courses/', mobile_api.mobile_courses, name='mobile_courses'),
     path('api/mobile/feed/', mobile_api.mobile_feed, name='mobile_feed'),
     path('api/mobile/feed/<int:post_id>/', mobile_api.mobile_post_detail, name='mobile_post_detail'),
     path('api/mobile/feed/<int:post_id>/seen/', mobile_api.mobile_post_seen, name='mobile_post_seen'),

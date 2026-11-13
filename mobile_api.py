@@ -115,6 +115,7 @@ def user_data(user, request=None):
             'relationship_status': profile.relationship_status if profile else '',
             'education_status': profile.education_status if profile else '',
             'avatar': media_url(request, profile.profile_image) if request and profile and profile.profile_image else '',
+            'cover_image': media_url(request, profile.cover_image) if request and profile and profile.cover_image else '',
             'is_staff': user.is_staff,
             'last_seen_privacy': profile.last_seen_privacy if profile else 'everyone',
             'status_privacy': profile.status_privacy if profile else 'everyone',
@@ -753,14 +754,23 @@ def mobile_profile(request, username):
         if data.get('status_privacy') in {'everyone','followers','nobody'}: profile.status_privacy=data['status_privacy']
         if 'read_receipts' in data: profile.read_receipts=str(data['read_receipts']).lower() in ('1','true','yes')
         avatar = request.FILES.get('avatar')
-        if avatar:
+        cover_image = request.FILES.get('cover_image')
+        if avatar or cover_image:
             try:
                 from PIL import Image
-                Image.open(avatar).verify()
-                avatar.seek(0)
+                for image_file in (avatar, cover_image):
+                    if image_file is None:
+                        continue
+                    if image_file.size > MAX_UPLOAD:
+                        return JsonResponse({'error':'Profile images must be 25 MB or smaller.'}, status=413)
+                    Image.open(image_file).verify()
+                    image_file.seek(0)
             except Exception:
                 return JsonResponse({'error':'Please select a valid image file.'}, status=400)
-            profile.profile_image=avatar
+            if avatar:
+                profile.profile_image=avatar
+            if cover_image:
+                profile.cover_image=cover_image
         profile.save()
     return JsonResponse({'profile':{**user_data(person,request),'followers':profile.followed_by.count(),'following':profile.follows.count(),'is_following':viewer_profile.follows.filter(pk=profile.pk).exists(),'posts':[post_data(p,request,request.user) for p in Meep.objects.filter(user=person).order_by('-created_at')[:50]]}})
 
@@ -827,12 +837,64 @@ def mobile_complaints(request):
 @api_login_required
 @require_http_methods(['GET'])
 def mobile_news_shorts(request):
+    """Legacy endpoint kept for already-installed app versions."""
     videos = Video.objects.select_related('user').order_by('-created_at')[:100]
     return JsonResponse({'shorts': [
         {'id': video.id, 'username': video.user.username, 'caption': video.caption,
          'video': media_url(request, video.video, resource_type='video'), 'created_at': video.created_at.isoformat()}
         for video in videos
     ]})
+
+
+@api_login_required
+@require_http_methods(['GET'])
+def mobile_courses(request):
+    groups = [
+        {
+            'name': 'Computing & Software',
+            'courses': [
+                {'name': 'Computer Science', 'path': '/computersci'},
+                {'name': 'Software Engineering', 'path': '/softeng'},
+                {'name': 'Information Technology', 'path': '/infotech'},
+                {'name': 'Data Science', 'path': '/datascience'},
+                {'name': 'Cyber Security', 'path': '/cybersec'},
+                {'name': 'Python', 'path': '/mit'},
+                {'name': 'C++', 'path': '/food_science'},
+                {'name': 'Java', 'path': '/botany'},
+                {'name': 'C#', 'path': '/chemistry'},
+                {'name': 'CSS', 'path': '/biotech'},
+                {'name': 'JavaScript', 'path': '/hnd'},
+                {'name': 'HTML', 'path': '/mlt'},
+                {'name': 'Vue.js', 'path': '/dpt'},
+                {'name': 'Angular', 'path': '/slp'},
+            ],
+        },
+        {
+            'name': 'Engineering & Life Sciences',
+            'courses': [
+                {'name': 'Electrical Engineering', 'path': '/electricalengin'},
+                {'name': 'Bio-Informatics', 'path': '/bioinformatics'},
+                {'name': 'Bio Chemistry', 'path': '/biochem'},
+            ],
+        },
+        {
+            'name': 'Social Sciences & Media',
+            'courses': [
+                {'name': 'Criminology', 'path': '/criminology'},
+                {'name': 'Mass Communication', 'path': '/masscomm'},
+                {'name': 'Media Sciences', 'path': '/mediasci'},
+                {'name': 'Sociology', 'path': '/sociology'},
+            ],
+        },
+        {
+            'name': 'Psychology',
+            'courses': [
+                {'name': 'Psychology Diploma', 'path': '/phsycodiploma'},
+                {'name': 'Applied Psychology', 'path': '/appliedphsyco'},
+            ],
+        },
+    ]
+    return JsonResponse({'groups': groups})
 
 # Authenticated video editing endpoints (requires ffmpeg and ffprobe installed).
 import os

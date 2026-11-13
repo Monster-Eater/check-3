@@ -1375,7 +1375,7 @@ class _HomeShellState extends State<HomeShell> {
       FeedScreen(api: widget.api),
       ContactsScreen(api: widget.api, recentOnly: true),
       GroupsScreen(api: widget.api),
-      NewsShortsScreen(api: widget.api),
+      CoursesScreen(api: widget.api),
     ];
     return Scaffold(
       appBar: AppBar(
@@ -1478,9 +1478,9 @@ class _HomeShellState extends State<HomeShell> {
             label: 'Groups',
           ),
           const NavigationDestination(
-            icon: Icon(Icons.play_circle_outline),
-            selectedIcon: Icon(Icons.play_circle),
-            label: 'News Shorts',
+            icon: Icon(Icons.school_outlined),
+            selectedIcon: Icon(Icons.school),
+            label: 'Courses',
           ),
         ],
       ),
@@ -1488,92 +1488,133 @@ class _HomeShellState extends State<HomeShell> {
   }
 }
 
-class NewsShortsScreen extends StatefulWidget {
-  const NewsShortsScreen({super.key, required this.api});
+class CoursesScreen extends StatefulWidget {
+  const CoursesScreen({super.key, required this.api});
   final CampusApi api;
   @override
-  State<NewsShortsScreen> createState() => _NewsShortsScreenState();
+  State<CoursesScreen> createState() => _CoursesScreenState();
 }
 
-class _NewsShortsScreenState extends State<NewsShortsScreen> {
-  List shorts = [];
+class _CoursesScreenState extends State<CoursesScreen> {
+  List groups = [];
   bool loading = true;
   String? error;
 
   @override
   void initState() {
     super.initState();
-    loadShorts();
+    loadCourses();
   }
 
-  Future<void> loadShorts() async {
+  Future<void> loadCourses() async {
     try {
-      final result = await widget.api.get('/api/mobile/news-shorts/');
-      if (mounted) setState(() { shorts = result['shorts'] ?? []; loading = false; error = null; });
+      final result = await widget.api.get('/api/mobile/courses/');
+      if (mounted) setState(() { groups = result['groups'] ?? []; loading = false; error = null; });
     } catch (e) {
       if (mounted) setState(() { loading = false; error = '$e'; });
     }
   }
 
+  IconData _groupIcon(String name) {
+    if (name.contains('Computing')) return Icons.computer_outlined;
+    if (name.contains('Engineering')) return Icons.engineering;
+    if (name.contains('Social')) return Icons.groups_outlined;
+    return Icons.psychology;
+  }
+
+  Future<void> _openCourse(Map course) async {
+    final path = (course['path'] ?? '').toString();
+    if (path.isEmpty) return;
+    try {
+      final opened = await launchUrl(
+        widget.api.uri(path),
+        mode: LaunchMode.externalApplication,
+      );
+      if (!opened && mounted) snack(context, 'Could not open this course page.');
+    } catch (e) {
+      if (mounted) snack(context, errorText(e));
+    }
+  }
+
   @override
   Widget build(BuildContext context) => RefreshIndicator(
-    onRefresh: loadShorts,
+    onRefresh: loadCourses,
     child: loading
         ? const Center(child: CircularProgressIndicator())
         : error != null
-            ? ListView(children: [const SizedBox(height: 100), Center(child: Text(error!))])
-            : shorts.isEmpty
-                ? ListView(children: const [SizedBox(height: 100), Center(child: Text('No news shorts are available yet.'))])
-                : ListView.builder(
+            ? ListView(
+                children: [
+                  const SizedBox(height: 100),
+                  Center(child: Text(error!)),
+                  Center(child: TextButton(onPressed: loadCourses, child: const Text('Retry'))),
+                ],
+              )
+            : groups.isEmpty
+                ? ListView(
+                    children: const [
+                      SizedBox(height: 100),
+                      Center(child: Text('No courses are available yet.')),
+                    ],
+                  )
+                : ListView(
                     padding: const EdgeInsets.all(12),
-                    itemCount: shorts.length,
-                    itemBuilder: (context, index) => NewsShortClip(item: shorts[index]),
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(4, 8, 4, 12),
+                        child: Text(
+                          'Browse courses by major class',
+                          style: Theme.of(context).textTheme.titleMedium,
+                        ),
+                      ),
+                      for (var index = 0; index < groups.length; index++)
+                        _CourseGroupCard(
+                          group: groups[index],
+                          icon: _groupIcon((groups[index]['name'] ?? '').toString()),
+                          initiallyExpanded: index == 0,
+                          onCourseTap: _openCourse,
+                        ),
+                    ],
                   ),
   );
 }
 
-class NewsShortClip extends StatefulWidget {
-  const NewsShortClip({super.key, required this.item});
-  final dynamic item;
-  @override
-  State<NewsShortClip> createState() => _NewsShortClipState();
-}
+class _CourseGroupCard extends StatelessWidget {
+  const _CourseGroupCard({
+    required this.group,
+    required this.icon,
+    required this.initiallyExpanded,
+    required this.onCourseTap,
+  });
 
-class _NewsShortClipState extends State<NewsShortClip> {
-  VideoPlayerController? controller;
-  bool failed = false;
+  final dynamic group;
+  final IconData icon;
+  final bool initiallyExpanded;
+  final Future<void> Function(Map course) onCourseTap;
+
   @override
-  void initState() {
-    super.initState();
-    final url = (widget.item['video'] ?? '').toString();
-    if (url.isEmpty) { failed = true; return; }
-    controller = VideoPlayerController.networkUrl(Uri.parse(url))
-      ..initialize().then((_) { if (mounted) setState(() {}); }).catchError((_) { if (mounted) setState(() => failed = true); });
-  }
-  @override
-  void dispose() { controller?.dispose(); super.dispose(); }
-  @override
-  Widget build(BuildContext context) => Card(
-    clipBehavior: Clip.antiAlias,
-    margin: const EdgeInsets.only(bottom: 16),
-    child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-      if (failed) const SizedBox(height: 220, child: Center(child: Text('This video could not be loaded.')))
-      else if (controller?.value.isInitialized == true)
-        AspectRatio(aspectRatio: controller!.value.aspectRatio, child: Stack(alignment: Alignment.center, children: [
-          VideoPlayer(controller!),
-          IconButton.filledTonal(
-            onPressed: () => setState(() => controller!.value.isPlaying ? controller!.pause() : controller!.play()),
-            icon: Icon(controller!.value.isPlaying ? Icons.pause : Icons.play_arrow),
-          ),
-        ]))
-      else const SizedBox(height: 220, child: Center(child: CircularProgressIndicator())),
-      ListTile(
-        leading: const CircleAvatar(child: Icon(Icons.person_outline)),
-        title: Text('@${widget.item['username'] ?? 'campus'}'),
-        subtitle: Text((widget.item['caption'] ?? '').toString()),
+  Widget build(BuildContext context) {
+    final courses = List<Map>.from(group['courses'] ?? const []);
+    final name = (group['name'] ?? 'Courses').toString();
+    return Card(
+      margin: const EdgeInsets.only(bottom: 10),
+      clipBehavior: Clip.antiAlias,
+      child: ExpansionTile(
+        initiallyExpanded: initiallyExpanded,
+        leading: CircleAvatar(child: Icon(icon)),
+        title: Text(name, style: const TextStyle(fontWeight: FontWeight.w700)),
+        subtitle: Text('${courses.length} courses'),
+        children: [
+          for (final course in courses)
+            ListTile(
+              leading: const Icon(Icons.menu_book_outlined),
+              title: Text((course['name'] ?? 'Course').toString()),
+              trailing: const Icon(Icons.open_in_new, size: 18),
+              onTap: () => onCourseTap(course),
+            ),
+        ],
       ),
-    ]),
-  );
+    );
+  }
 }
 
 class FeedScreen extends StatefulWidget {
@@ -2182,7 +2223,6 @@ class _ContactsScreenState extends State<ContactsScreen> {
   @override
   Widget build(BuildContext c) => Column(
     children: [
-      StatusPanel(api: widget.api),
       Padding(
         padding: const EdgeInsets.fromLTRB(16, 4, 8, 0),
         child: Row(
@@ -2991,7 +3031,6 @@ class _ChatScreenState extends State<ChatScreen> {
     ),
     body: Column(
       children: [
-        StatusPanel(api: widget.api),
         if (error != null)
           Material(
             color: Colors.red.shade50,
@@ -3188,7 +3227,6 @@ class _GroupsScreenState extends State<GroupsScreen> {
     ),
     body: Column(
       children: [
-        StatusPanel(api: widget.api),
         Expanded(
           child: loading
               ? const Center(child: CircularProgressIndicator())
@@ -3768,7 +3806,6 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     ),
     body: Column(
       children: [
-        StatusPanel(api: widget.api),
         Expanded(
           child: loading
               ? const Center(child: CircularProgressIndicator())
@@ -4265,6 +4302,24 @@ class _ProfileScreenState extends State<ProfileScreen> {
     }
   }
 
+  Future<void> changeCoverImage() async {
+    final file = await pickUpload(imagesOnly: true);
+    if (file == null || !mounted) return;
+    setState(() => busy = true);
+    try {
+      await widget.api.upload(
+        '/api/mobile/profile/${Uri.encodeComponent(username)}/',
+        file: file,
+        fileField: 'cover_image',
+      );
+      await load();
+    } catch (e) {
+      if (mounted) snack(context, errorText(e));
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
+  }
+
   Future<void> changePassword() async {
     final old = TextEditingController(),
         next = TextEditingController(),
@@ -4347,6 +4402,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     final mine = widget.username.isEmpty;
     final avatar = (profile['avatar'] ?? '').toString();
+    final coverImage = (profile['cover_image'] ?? '').toString();
     return Scaffold(
       appBar: AppBar(title: Text('@$username')),
       body: RefreshIndicator(
@@ -4354,18 +4410,62 @@ class _ProfileScreenState extends State<ProfileScreen> {
         child: ListView(
           padding: const EdgeInsets.all(16),
           children: [
-            Center(
-              child: CircleAvatar(
-                radius: 52,
-                backgroundImage: avatar.isEmpty ? null : NetworkImage(avatar),
-                child: avatar.isEmpty
-                    ? Text(
-                        initials(username),
-                        style: const TextStyle(fontSize: 30),
-                      )
-                    : null,
-              ),
+            Stack(
+              clipBehavior: Clip.none,
+              alignment: Alignment.bottomCenter,
+              children: [
+                Container(
+                  height: 190,
+                  width: double.infinity,
+                  decoration: BoxDecoration(
+                    color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                    borderRadius: BorderRadius.circular(16),
+                    image: coverImage.isEmpty
+                        ? null
+                        : DecorationImage(
+                            image: NetworkImage(coverImage),
+                            fit: BoxFit.cover,
+                          ),
+                  ),
+                  child: Stack(
+                    children: [
+                      if (coverImage.isEmpty)
+                        const Center(
+                          child: Icon(Icons.landscape_outlined, size: 46),
+                        ),
+                      if (mine)
+                        Positioned(
+                          right: 10,
+                          bottom: 10,
+                          child: FilledButton.tonalIcon(
+                            onPressed: busy ? null : changeCoverImage,
+                            icon: const Icon(Icons.photo_camera),
+                            label: const Text('Edit cover'),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+                Positioned(
+                  bottom: -42,
+                  child: CircleAvatar(
+                    radius: 54,
+                    backgroundColor: Theme.of(context).colorScheme.surface,
+                    child: CircleAvatar(
+                      radius: 49,
+                      backgroundImage: avatar.isEmpty ? null : NetworkImage(avatar),
+                      child: avatar.isEmpty
+                          ? Text(
+                              initials(username),
+                              style: const TextStyle(fontSize: 30),
+                            )
+                          : null,
+                    ),
+                  ),
+                ),
+              ],
             ),
+            const SizedBox(height: 54),
             const SizedBox(height: 12),
             Center(
               child: Text(
