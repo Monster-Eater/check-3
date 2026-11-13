@@ -3,15 +3,11 @@ import calendar
 from calendar import HTMLCalendar
 from datetime import datetime
 from django.http import HttpResponseRedirect
-from .models import Event, Profile, Meep, Complaint, Donate, Category, Video, Comment
+from .models import Event, Profile, Meep, Complaint, Category, Video, Comment
 from.forms import VenueForm, EventForm, MeepForm, Video_form, CommentForm
 from django.contrib import messages
-import pandas as pd
 
 
-from sklearn.model_selection import  train_test_split
-from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score
 from django.views.generic import CreateView, DetailView, ListView
 from django.contrib.auth.models import User
 from django.urls import reverse_lazy
@@ -266,17 +262,7 @@ def add_event(request):
 
     #===================================Tools========================================
 
-def bmi(request):
-    return render(request, 'home/bmi.html')
-def donate(request):
-    if request.method =="POST":
-        name = request.POST.get('name')
-        email = request.POST.get('email')
-        phone = request.POST.get('phone')
-        desc = request.POST.get('desc')
-        donate = Donate(name=name, email=email, phone=phone, desc=desc, date = datetime.today())
-        donate.save()
-    return render(request, 'home/donate.html')
+
 
 
 

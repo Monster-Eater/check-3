@@ -1,7 +1,7 @@
 from django.contrib import admin
 from .models import Event
 from .models import Venue
-from .models import MyClubUser, Donate, Category, Comment
+from .models import MyClubUser, Category, Comment
 from .models import Profile, Meep, Complaint, Video
 from django.contrib.auth.models import User, Group
 
@@ -14,7 +14,6 @@ class ComplaintAdmin(admin.ModelAdmin):
     list_filter = ('status', 'date')
     search_fields = ('name', 'email', 'desc', 'user__username')
     readonly_fields = ('user', 'date')
-admin.site.register(Donate)
 admin.site.register(Category)
 admin.site.register(Video)
 admin.site.register(Comment)

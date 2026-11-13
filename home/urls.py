@@ -45,10 +45,7 @@ urlpatterns = [
     path('masscomm', views.masscomm, name = 'masscomm' ),       
     path('mediasci', views.mediasci, name = 'mediasci' ),       
     path('sociology', views.sociology, name = 'sociology' ),  
-    path('bmi', views.bmi, name = 'bmi' ),     
-    path('donate', views.donate, name = 'donate' ),  
-    
-   
+
     path('add_category/', AddCategoryView.as_view(), name='add_category' ),
     path('category/<str:cats>/', CategoryView, name = 'category'),
     path('meep_show/<int:pk>', views.meep_show, name='meep_show'),

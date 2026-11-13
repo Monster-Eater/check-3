@@ -5,14 +5,7 @@ from django.urls import reverse
 from . validators import file_size
 from ckeditor.fields import RichTextField
 
-class Donate(models.Model):
-    name= models.CharField(max_length=120)
-    email= models.CharField(max_length=100)
-    phone= models.CharField(max_length=20)
-    desc= models.TextField()
-    date= models.DateField()
-    def __str__(self):
-        return self.name
+
 
 
 
