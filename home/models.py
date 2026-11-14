@@ -40,6 +40,7 @@ class Meep(models.Model):
     category = models.CharField(max_length= 255, default='Entertainment')
     title = models.CharField(max_length=255, default = 'No Title')
     attachment = models.FileField(upload_to='feed_attachments/', blank=True, null=True)
+    shared_post = models.ForeignKey('self', null=True, blank=True, on_delete=models.SET_NULL, related_name='reshares')
     edited_at = models.DateTimeField(blank=True, null=True)
     client_id = models.UUIDField(blank=True, null=True, db_index=True)
 
@@ -175,3 +176,45 @@ class PostReceipt(models.Model):
 
     def __str__(self):
         return '%s - %s' % (self.post.title, self.name)
+
+
+class HiddenPost(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='hidden_posts')
+    post = models.ForeignKey(Meep, on_delete=models.CASCADE, related_name='hidden_by')
+    hidden_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['user', 'post'], name='unique_hidden_post_per_user')]
+
+    def __str__(self):
+        return f'{self.user} hid post {self.post_id}'
+
+
+class PostReport(models.Model):
+    REASON_CHOICES = [
+        ('spam', 'Spam'),
+        ('harassment', 'Harassment or bullying'),
+        ('hate', 'Hate speech or abuse'),
+        ('violence', 'Violence or dangerous content'),
+        ('misinformation', 'False information'),
+        ('other', 'Other'),
+    ]
+    STATUS_CHOICES = [
+        ('open', 'Open'),
+        ('reviewing', 'Reviewing'),
+        ('resolved', 'Resolved'),
+        ('dismissed', 'Dismissed'),
+    ]
+    reporter = models.ForeignKey(User, on_delete=models.CASCADE, related_name='post_reports')
+    post = models.ForeignKey(Meep, on_delete=models.CASCADE, related_name='reports')
+    reason = models.CharField(max_length=24, choices=REASON_CHOICES)
+    details = models.TextField(blank=True)
+    status = models.CharField(max_length=16, choices=STATUS_CHOICES, default='open')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['reporter', 'post'], name='unique_post_report_per_user')]
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f'{self.get_reason_display()} report for post {self.post_id}'

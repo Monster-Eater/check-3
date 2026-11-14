@@ -1,5 +1,5 @@
 """Authenticated JSON/multipart API for Campus Times Flutter clients."""
-import hashlib, json, secrets, logging
+import hashlib, json, secrets, logging, mimetypes
 from datetime import timedelta
 from functools import wraps
 from django.contrib.auth import authenticate
@@ -19,7 +19,8 @@ from asgiref.sync import async_to_sync
 import uuid
 from chat.models import (Message, MobileAPIToken, Group, GroupMessage, GroupMessageReceipt,
                          ChatPresence, StatusUpdate, StatusView, SocialNotification)
-from home.models import Meep, Comment, Profile, Complaint, Video, PostReceipt
+from home.models import Meep, Comment, Profile, Complaint, Video, PostReceipt, HiddenPost, PostReport
+from home.course_catalog import grouped_catalog
 
 MAX_UPLOAD = 25 * 1024 * 1024
 logger = logging.getLogger(__name__)
@@ -121,16 +122,36 @@ def user_data(user, request=None):
             'status_privacy': profile.status_privacy if profile else 'everyone',
             'read_receipts': profile.read_receipts if profile else True}
 
+def shared_post_data(post, request):
+    if not post:
+        return None
+    filename = media_name(post.attachment)
+    return {
+        'id': post.id,
+        'username': post.user.username,
+        'author': user_data(post.user, request),
+        'title': post.title or '',
+        'body': strip_tags(post.body or ''),
+        'attachment': media_url(request, post.attachment),
+        'attachment_name': filename,
+        'attachment_mime_type': mimetypes.guess_type(filename)[0] or '',
+        'created_at': post.created_at.isoformat(),
+    }
+
+
 def post_data(post, request, viewer):
     receipts = list(post.receipts.all())
     own_receipts = [r for r in receipts if r.user_id == viewer.pk]
+    filename = media_name(post.attachment)
     return {'id': post.id, 'username': post.user.username, 'user_id': post.user_id,
             'author': user_data(post.user, request), 'title': post.title or '',
             'body': strip_tags(post.body or ''), 'category': post.category or 'General',
             'created_at': post.created_at.isoformat(), 'likes': post.likes.count(),
             'liked': post.likes.filter(pk=viewer.pk).exists(),
             'attachment': media_url(request, post.attachment),
-            'attachment_name': media_name(post.attachment),
+            'attachment_name': filename,
+            'attachment_mime_type': mimetypes.guess_type(filename)[0] or '',
+            'shared_post': shared_post_data(post.shared_post, request) if post.shared_post_id else None,
             'comments_count': post.comments.count(), 'is_mine': post.user_id == viewer.pk,
             'edited_at': post.edited_at.isoformat() if post.edited_at else '',
             'delivered_count': sum(1 for r in receipts if r.delivered_at) if post.user_id == viewer.pk else None,
@@ -241,7 +262,9 @@ def mobile_feed(request):
         if created:
             emit('campus_feed', 'post.event', payload_data)
         return JsonResponse({'post':payload_data}, status=201 if created else 200)
-    qs = Meep.objects.select_related('user').prefetch_related('likes','receipts','comments').order_by('-created_at')[:100]
+    qs = Meep.objects.select_related('user', 'shared_post', 'shared_post__user').exclude(
+        hidden_by__user=request.user,
+    ).prefetch_related('likes','receipts','comments').order_by('-created_at')[:100]
     now = timezone.now()
     for post in qs:
         if post.user_id != request.user.pk:
@@ -267,6 +290,42 @@ def mobile_post_seen(request, post_id):
             receipt.save(update_fields=['delivered_at','seen_at'])
         if changed: emit('campus_feed', 'receipt.event', {'type':'post.receipt','post_id':post.pk,'user_id':request.user.pk,'seen':True})
     return JsonResponse({'ok':True})
+
+
+@csrf_exempt
+@api_login_required
+@require_http_methods(['POST'])
+def mobile_hide_post(request, post_id):
+    post = Meep.objects.filter(pk=post_id).first()
+    if not post:
+        return JsonResponse({'error': 'Post not found.'}, status=404)
+    if post.user_id == request.user.pk:
+        return JsonResponse({'error': "You can't hide your own post this way."}, status=400)
+    HiddenPost.objects.get_or_create(user=request.user, post=post)
+    return JsonResponse({'ok': True})
+
+
+@csrf_exempt
+@api_login_required
+@require_http_methods(['POST'])
+def mobile_report_post(request, post_id):
+    post = Meep.objects.filter(pk=post_id).first()
+    if not post:
+        return JsonResponse({'error': 'Post not found.'}, status=404)
+    if post.user_id == request.user.pk:
+        return JsonResponse({'error': "You can't report your own post."}, status=400)
+    data = payload(request) or {}
+    reason = str(data.get('reason', '')).strip().lower()
+    allowed_reasons = {choice[0] for choice in PostReport.REASON_CHOICES}
+    if reason not in allowed_reasons:
+        return JsonResponse({'error': 'Choose a reason for reporting this post.'}, status=400)
+    details = str(data.get('details', '')).strip()[:2000]
+    _, created = PostReport.objects.get_or_create(
+        reporter=request.user,
+        post=post,
+        defaults={'reason': reason, 'details': details},
+    )
+    return JsonResponse({'ok': True, 'already_reported': not created}, status=201 if created else 200)
 
 @csrf_exempt
 @api_login_required
@@ -791,13 +850,21 @@ def mobile_follow(request, username):
 @api_login_required
 @require_http_methods(['POST'])
 def mobile_share(request, post_id):
-    original = Meep.objects.filter(pk=post_id).first()
+    original = Meep.objects.select_related('user', 'shared_post', 'shared_post__user').filter(pk=post_id).first()
     if not original: return JsonResponse({'error': 'Post not found.'}, status=404)
     data = payload(request) or {}
     note = str(data.get('body', '')).strip()
-    body = (note + ('\n\n' if note else '') + f'Reshared from @{original.user.username}:\n{strip_tags(original.body or "")}')[:50000]
-    shared = Meep.objects.create(user=request.user, body=body, title=f'Shared: {original.title or "Post"}'[:255], category=original.category or 'General')
-    return JsonResponse({'post': post_data(shared, request, request.user)}, status=201)
+    source = original.shared_post if original.shared_post_id else original
+    shared = Meep.objects.create(
+        user=request.user,
+        body=note[:50000],
+        title=(source.title or 'Shared post')[:255],
+        category=source.category or 'General',
+        shared_post=source,
+    )
+    payload_data = post_data(shared, request, request.user)
+    emit('campus_feed', 'post.event', payload_data)
+    return JsonResponse({'post': payload_data}, status=201)
 
 @csrf_exempt
 @api_login_required
@@ -849,52 +916,7 @@ def mobile_news_shorts(request):
 @api_login_required
 @require_http_methods(['GET'])
 def mobile_courses(request):
-    groups = [
-        {
-            'name': 'Computing & Software',
-            'courses': [
-                {'name': 'Computer Science', 'path': '/computersci'},
-                {'name': 'Software Engineering', 'path': '/softeng'},
-                {'name': 'Information Technology', 'path': '/infotech'},
-                {'name': 'Data Science', 'path': '/datascience'},
-                {'name': 'Cyber Security', 'path': '/cybersec'},
-                {'name': 'Python', 'path': '/mit'},
-                {'name': 'C++', 'path': '/food_science'},
-                {'name': 'Java', 'path': '/botany'},
-                {'name': 'C#', 'path': '/chemistry'},
-                {'name': 'CSS', 'path': '/biotech'},
-                {'name': 'JavaScript', 'path': '/hnd'},
-                {'name': 'HTML', 'path': '/mlt'},
-                {'name': 'Vue.js', 'path': '/dpt'},
-                {'name': 'Angular', 'path': '/slp'},
-            ],
-        },
-        {
-            'name': 'Engineering & Life Sciences',
-            'courses': [
-                {'name': 'Electrical Engineering', 'path': '/electricalengin'},
-                {'name': 'Bio-Informatics', 'path': '/bioinformatics'},
-                {'name': 'Bio Chemistry', 'path': '/biochem'},
-            ],
-        },
-        {
-            'name': 'Social Sciences & Media',
-            'courses': [
-                {'name': 'Criminology', 'path': '/criminology'},
-                {'name': 'Mass Communication', 'path': '/masscomm'},
-                {'name': 'Media Sciences', 'path': '/mediasci'},
-                {'name': 'Sociology', 'path': '/sociology'},
-            ],
-        },
-        {
-            'name': 'Psychology',
-            'courses': [
-                {'name': 'Psychology Diploma', 'path': '/phsycodiploma'},
-                {'name': 'Applied Psychology', 'path': '/appliedphsyco'},
-            ],
-        },
-    ]
-    return JsonResponse({'groups': groups})
+    return JsonResponse({'groups': grouped_catalog()})
 
 # Authenticated video editing endpoints (requires ffmpeg and ffprobe installed).
 import os

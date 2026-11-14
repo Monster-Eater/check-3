@@ -2,7 +2,7 @@ from django.contrib import admin
 from .models import Event
 from .models import Venue
 from .models import MyClubUser, Category, Comment
-from .models import Profile, Meep, Complaint, Video
+from .models import Profile, Meep, Complaint, Video, PostReport
 from django.contrib.auth.models import User, Group
 
 admin.site.unregister (Group)
@@ -17,6 +17,13 @@ class ComplaintAdmin(admin.ModelAdmin):
 admin.site.register(Category)
 admin.site.register(Video)
 admin.site.register(Comment)
+
+@admin.register(PostReport)
+class PostReportAdmin(admin.ModelAdmin):
+    list_display = ('id', 'post', 'reporter', 'reason', 'status', 'created_at')
+    list_filter = ('status', 'reason', 'created_at')
+    search_fields = ('post__title', 'post__user__username', 'reporter__username', 'details')
+    readonly_fields = ('post', 'reporter', 'reason', 'details', 'created_at')
 
 class ProfileInline(admin.StackedInline):
     model = Profile

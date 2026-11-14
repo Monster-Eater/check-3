@@ -1523,17 +1523,9 @@ class _CoursesScreenState extends State<CoursesScreen> {
   }
 
   Future<void> _openCourse(Map course) async {
-    final path = (course['path'] ?? '').toString();
-    if (path.isEmpty) return;
-    try {
-      final opened = await launchUrl(
-        widget.api.uri(path),
-        mode: LaunchMode.externalApplication,
-      );
-      if (!opened && mounted) snack(context, 'Could not open this course page.');
-    } catch (e) {
-      if (mounted) snack(context, errorText(e));
-    }
+    await Navigator.of(context).push(MaterialPageRoute<void>(
+      builder: (_) => CourseProgramScreen(course: course),
+    ));
   }
 
   @override
@@ -1602,15 +1594,129 @@ class _CourseGroupCard extends StatelessWidget {
         initiallyExpanded: initiallyExpanded,
         leading: CircleAvatar(child: Icon(icon)),
         title: Text(name, style: const TextStyle(fontWeight: FontWeight.w700)),
-        subtitle: Text('${courses.length} courses'),
+        subtitle: Text('${courses.length} degree programs'),
         children: [
           for (final course in courses)
             ListTile(
               leading: const Icon(Icons.menu_book_outlined),
               title: Text((course['name'] ?? 'Course').toString()),
-              trailing: const Icon(Icons.open_in_new, size: 18),
+              subtitle: Text((course['university'] ?? '').toString()),
+              trailing: const Icon(Icons.chevron_right),
               onTap: () => onCourseTap(course),
             ),
+        ],
+      ),
+    );
+  }
+}
+
+class CourseProgramScreen extends StatelessWidget {
+  const CourseProgramScreen({super.key, required this.course});
+  final Map course;
+
+  Future<void> _openSource(BuildContext context, {String? sourceOverride}) async {
+    final override = sourceOverride ?? '';
+    final rawSource = override.isNotEmpty ? override : (course['source'] ?? '').toString();
+    final source = Uri.tryParse(rawSource);
+    if (source == null || !source.hasScheme) {
+      snack(context, 'The official syllabus link is unavailable.');
+      return;
+    }
+    try {
+      final opened = await launchUrl(source, mode: LaunchMode.inAppBrowserView);
+      if (!opened && context.mounted) snack(context, 'Could not open the university syllabus.');
+    } catch (e) {
+      if (context.mounted) snack(context, errorText(e));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final semesters = List<Map>.from(course['semesters'] ?? const []);
+    return Scaffold(
+      appBar: AppBar(title: Text((course['name'] ?? 'Degree program').toString())),
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          Text((course['university'] ?? '').toString(),
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700)),
+          const SizedBox(height: 4),
+          Text((course['session'] ?? '').toString(), style: Theme.of(context).textTheme.bodySmall),
+          const SizedBox(height: 14),
+          FilledButton.icon(
+            onPressed: () => _openSource(context),
+            icon: const Icon(Icons.open_in_new),
+            label: const Text('Open official university scheme'),
+          ),
+          const SizedBox(height: 12),
+          if (semesters.isEmpty)
+            const Card(
+              child: Padding(
+                padding: EdgeInsets.all(16),
+                child: Text('The official university scheme is linked above. Open it for the complete semester-wise curriculum.'),
+              ),
+            )
+          else ...[
+            Text('Semester-wise curriculum', style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: 6),
+            for (final semester in semesters)
+              Card(
+                margin: const EdgeInsets.only(bottom: 8),
+                child: ExpansionTile(
+                  initiallyExpanded: (semester['number'] ?? 0) == 1,
+                  title: Text((semester['label'] ?? 'Semester ${semester['number']}').toString()),
+                  subtitle: Text('${(semester['courses'] as List? ?? const []).length} courses'),
+                  children: [
+                    for (final item in (semester['courses'] as List? ?? const []))
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 8),
+                        child: Card(
+                          child: ExpansionTile(
+                            leading: const Icon(Icons.menu_book_outlined),
+                            title: Text((item['title'] ?? '').toString()),
+                            subtitle: Text([
+                              if ((item['code'] ?? '').toString().isNotEmpty) (item['code'] ?? '').toString(),
+                              if (item['credits'] != null) '${item['credits']} credit hours',
+                            ].join(' · ')),
+                            children: [
+                              if ((item['topics'] as List? ?? const []).isNotEmpty)
+                                for (final topic in (item['topics'] as List? ?? const []))
+                                  ListTile(
+                                    dense: true,
+                                    leading: const Icon(Icons.circle, size: 7),
+                                    title: Text(topic.toString()),
+                                  )
+                              else
+                                Padding(
+                                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      const Text('The university publishes the full topic outline. Open the official course page to view it.'),
+                                      const SizedBox(height: 8),
+                                      TextButton.icon(
+                                        onPressed: () => _openSource(
+                                          context,
+                                          sourceOverride: (item['outline_url'] ?? '').toString(),
+                                        ),
+                                        icon: const Icon(Icons.open_in_new),
+                                        label: const Text('Open official topics'),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 8),
+              child: Text('Course choices and elective offerings can vary by cohort. Confirm the current scheme with the university.'),
+            ),
+          ],
         ],
       ),
     );
@@ -1687,6 +1793,89 @@ class _FeedScreenState extends State<FeedScreen> {
       await widget.api.post('/api/mobile/feed/${p['id']}/share/', {});
       await refresh();
       if (mounted) snack(context, 'Post shared to your feed.');
+    } catch (e) {
+      if (mounted) snack(context, errorText(e));
+    }
+  }
+
+  Future<void> hidePost(dynamic p) async {
+    try {
+      await widget.api.post('/api/mobile/feed/${p['id']}/hide/', {});
+      if (mounted) {
+        setState(() => posts.removeWhere((item) => '${item['id']}' == '${p['id']}'));
+        snack(context, 'You will see fewer posts like this.');
+      }
+    } catch (e) {
+      if (mounted) snack(context, errorText(e));
+    }
+  }
+
+  Future<void> reportPost(dynamic p) async {
+    const reasons = <String, String>{
+      'spam': 'Spam',
+      'harassment': 'Harassment or bullying',
+      'hate': 'Hate speech or abuse',
+      'violence': 'Violence or dangerous content',
+      'misinformation': 'False information',
+      'other': 'Other',
+    };
+    var reason = 'spam';
+    final details = TextEditingController();
+    final report = await showDialog<Map<String, String>>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialog) => AlertDialog(
+          title: const Text('Report this post'),
+          content: SizedBox(
+            width: 420,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text('Choose the reason that best describes the problem.'),
+                ),
+                const SizedBox(height: 12),
+                DropdownButtonFormField<String>(
+                  value: reason,
+                  decoration: const InputDecoration(labelText: 'Reason'),
+                  items: [
+                    for (final item in reasons.entries)
+                      DropdownMenuItem(value: item.key, child: Text(item.value)),
+                  ],
+                  onChanged: (value) {
+                    if (value != null) setDialog(() => reason = value);
+                  },
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: details,
+                  minLines: 2,
+                  maxLines: 4,
+                  maxLength: 2000,
+                  decoration: const InputDecoration(
+                    labelText: 'Additional details (optional)',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, {'reason': reason, 'details': details.text.trim()}),
+              child: const Text('Submit report'),
+            ),
+          ],
+        ),
+      ),
+    );
+    details.dispose();
+    if (report == null || !mounted) return;
+    try {
+      await widget.api.post('/api/mobile/feed/${p['id']}/report/', report);
+      if (mounted) snack(context, 'Report sent for review.');
     } catch (e) {
       if (mounted) snack(context, errorText(e));
     }
@@ -1853,6 +2042,8 @@ class _FeedScreenState extends State<FeedScreen> {
                 onShare: () => share(p),
                 onEdit: p['is_mine']==true ? () => postActions(p,'edit') : null,
                 onDelete: p['is_mine']==true ? () => postActions(p,'delete') : null,
+                onHide: p['is_mine']==true ? null : () => hidePost(p),
+                onReport: p['is_mine']==true ? null : () => reportPost(p),
                 onProfile: () => Navigator.push(c, MaterialPageRoute(builder: (_) => ProfileScreen(api: widget.api, username: p['username']))),
               ),
             );
@@ -1874,6 +2065,8 @@ class PostCard extends StatelessWidget {
     this.onShare,
     this.onEdit,
     this.onDelete,
+    this.onHide,
+    this.onReport,
   });
   final CampusApi api;
   final dynamic post;
@@ -1881,11 +2074,14 @@ class PostCard extends StatelessWidget {
   final VoidCallback? onShare;
   final VoidCallback? onEdit;
   final VoidCallback? onDelete;
+  final VoidCallback? onHide;
+  final VoidCallback? onReport;
   @override
   Widget build(BuildContext c) {
     final a = post['author'] ?? {};
     final avatar = a['avatar'] ?? '';
     final attachment = post['attachment'] ?? '';
+    final shared = post['shared_post'];
     return Card(
       clipBehavior: Clip.antiAlias,
       margin: const EdgeInsets.only(bottom: 12),
@@ -1927,9 +2123,24 @@ class PostCard extends StatelessWidget {
                     ),
                   ),
                 ),
-                if (onEdit != null || onDelete != null)
-                  PopupMenuButton<String>(onSelected:(v){if(v=='edit'){onEdit?.call();}else{onDelete?.call();}},itemBuilder:(_)=>[if(onEdit!=null)const PopupMenuItem(value:'edit',child:Text('Edit post')),if(onDelete!=null)const PopupMenuItem(value:'delete',child:Text('Delete post'))])
-                else const Icon(Icons.more_horiz),
+                if (onEdit != null || onDelete != null || onHide != null || onReport != null)
+                  PopupMenuButton<String>(
+                    tooltip: 'Post options',
+                    onSelected: (v) {
+                      if (v == 'edit') onEdit?.call();
+                      if (v == 'delete') onDelete?.call();
+                      if (v == 'hide') onHide?.call();
+                      if (v == 'report') onReport?.call();
+                    },
+                    itemBuilder: (_) => [
+                      if (onEdit != null) const PopupMenuItem(value: 'edit', child: Text('Edit post')),
+                      if (onDelete != null) const PopupMenuItem(value: 'delete', child: Text('Delete post')),
+                      if (onHide != null) const PopupMenuItem(value: 'hide', child: Text('Hide')),
+                      if (onReport != null) const PopupMenuItem(value: 'report', child: Text('Report')),
+                    ],
+                  )
+                else
+                  const Icon(Icons.more_horiz),
               ],
             ),
             if ((post['title'] ?? '').toString().isNotEmpty)
@@ -1962,6 +2173,14 @@ class PostCard extends StatelessWidget {
                     mimeType: (post['attachment_mime_type'] ?? post['mime_type'] ?? post['content_type'] ?? '').toString(),
                     api: api,
                   ),
+                ),
+              ),
+            if (shared is Map)
+              Padding(
+                padding: const EdgeInsets.only(top: 12),
+                child: SharedPostPreview(
+                  api: api,
+                  post: Map<String, dynamic>.from(shared),
                 ),
               ),
             const Divider(height: 22),
@@ -2000,6 +2219,74 @@ class PostCard extends StatelessWidget {
                 ),
               ],
             ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class SharedPostPreview extends StatelessWidget {
+  const SharedPostPreview({super.key, required this.api, required this.post});
+  final CampusApi api;
+  final Map<String, dynamic> post;
+
+  @override
+  Widget build(BuildContext context) {
+    final author = post['author'] is Map ? post['author'] as Map : const {};
+    final avatar = (author['avatar'] ?? '').toString();
+    final attachment = (post['attachment'] ?? '').toString();
+    return Container(
+      width: double.infinity,
+      decoration: BoxDecoration(
+        border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(10),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                CircleAvatar(
+                  radius: 17,
+                  backgroundImage: avatar.isEmpty ? null : NetworkImage(avatar),
+                  child: avatar.isEmpty ? Text(initials(post['username'] ?? '')) : null,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    (author['full_name'] ?? '@${post['username']}').toString(),
+                    style: const TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                ),
+                const Text('Original post'),
+              ],
+            ),
+            if ((post['title'] ?? '').toString().isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 10),
+                child: Text(post['title'].toString(), style: const TextStyle(fontWeight: FontWeight.bold)),
+              ),
+            if ((post['body'] ?? '').toString().isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: Text(post['body'].toString(), style: const TextStyle(height: 1.35)),
+              ),
+            if (attachment.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 10),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(8),
+                  child: SocialMediaView(
+                    url: attachment,
+                    filename: (post['attachment_name'] ?? '').toString(),
+                    mimeType: (post['attachment_mime_type'] ?? '').toString(),
+                    api: api,
+                  ),
+                ),
+              ),
           ],
         ),
       ),
