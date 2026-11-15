@@ -19,8 +19,8 @@ from asgiref.sync import async_to_sync
 import uuid
 from chat.models import (Message, MobileAPIToken, Group, GroupMessage, GroupMessageReceipt,
                          ChatPresence, StatusUpdate, StatusView, SocialNotification)
-from home.models import Meep, Comment, Profile, Complaint, Video, PostReceipt, HiddenPost, PostReport
-from home.course_catalog import grouped_catalog
+from home.models import (Meep, Comment, Profile, Complaint, Video, PostReceipt, HiddenPost, PostReport)
+from home.school_catalog import classes_catalog
 
 MAX_UPLOAD = 25 * 1024 * 1024
 logger = logging.getLogger(__name__)
@@ -119,7 +119,7 @@ def user_data(user, request=None):
             'cover_image': media_url(request, profile.cover_image) if request and profile and profile.cover_image else '',
             'is_staff': user.is_staff,
             'last_seen_privacy': profile.last_seen_privacy if profile else 'everyone',
-            'status_privacy': profile.status_privacy if profile else 'everyone',
+            'status_privacy': profile.status_privacy if profile else 'friends',
             'read_receipts': profile.read_receipts if profile else True}
 
 def shared_post_data(post, request):
@@ -238,7 +238,7 @@ def mobile_me(request):
         profile, _ = Profile.objects.get_or_create(user=request.user)
         profile.profile_bio = str(data.get('bio', profile.profile_bio or ''))[:500]
         profile.last_seen_privacy = data.get('last_seen_privacy', profile.last_seen_privacy) if data.get('last_seen_privacy', profile.last_seen_privacy) in {'everyone','followers','nobody'} else profile.last_seen_privacy
-        profile.status_privacy = data.get('status_privacy', profile.status_privacy) if data.get('status_privacy', profile.status_privacy) in {'everyone','followers','nobody'} else profile.status_privacy
+        profile.status_privacy = data.get('status_privacy', profile.status_privacy) if data.get('status_privacy', profile.status_privacy) in {'friends','nobody'} else profile.status_privacy
         if 'read_receipts' in data: profile.read_receipts = str(data.get('read_receipts')).lower() in ('1','true','yes')
         if request.FILES.get('avatar'): profile.profile_image = request.FILES['avatar']
         profile.save()
@@ -436,6 +436,41 @@ def contact_phone_key(value):
     digits = ''.join(character for character in str(value or '') if character.isdigit())
     return digits[2:] if digits.startswith('00') else digits
 
+
+def _resolve_phone_contact_invites(actor, raw_ids, raw_numbers, group=None):
+    """Allow group invites only for accounts matched to numbers in this request.
+
+    The phone book stays on the device; submitted numbers are used only for
+    this check and are never written to the database.
+    """
+    try:
+        if len(raw_ids) > 500:
+            return [], 'Choose no more than 500 group members at once.'
+        ids = {int(value) for value in raw_ids}
+    except (TypeError, ValueError):
+        return [], 'One or more selected members are invalid.'
+    if not ids:
+        return [], None
+    if actor.pk in ids:
+        ids.remove(actor.pk)
+    if not ids:
+        return [], None
+    if not isinstance(raw_numbers, list) or len(raw_numbers) > 500:
+        return [], 'Refresh your phone contacts and select members from there.'
+    number_keys = {contact_phone_key(value) for value in raw_numbers}
+    number_keys.discard('')
+    if not number_keys:
+        return [], 'Group members must be selected from your saved phone contacts.'
+    profiles = Profile.objects.filter(
+        user_id__in=ids, user__is_active=True, phone_discoverable=True,
+    ).exclude(phone_number='').select_related('user')
+    matched = [profile.user for profile in profiles if contact_phone_key(profile.phone_number) in number_keys]
+    already_in_group = set(group.members.filter(id__in=ids).values_list('id', flat=True)) if group else set()
+    matched_ids = {person.pk for person in matched} | already_in_group
+    if matched_ids != ids:
+        return [], 'Only people saved in your phone contacts who enabled phone discovery can be added.'
+    return [person for person in matched if person.pk not in already_in_group], None
+
 @csrf_exempt
 @api_login_required
 @require_http_methods(['POST'])
@@ -592,9 +627,11 @@ def mobile_groups(request):
     if request.method=='POST':
         data=payload(request) or {}; name=str(data.get('name','')).strip()[:100]
         if not name:return JsonResponse({'error':'Group name is required.'},status=400)
-        group=Group.objects.create(name=name,admin=request.user); group.members.add(request.user)
         ids=data.get('member_ids',[])
-        if isinstance(ids,list): group.members.add(*User.objects.filter(id__in=ids,is_active=True))
+        if not isinstance(ids, list): return JsonResponse({'error':'member_ids must be a list.'},status=400)
+        invited, error = _resolve_phone_contact_invites(request.user, ids, data.get('contact_numbers', []))
+        if error: return JsonResponse({'error':error},status=400)
+        group=Group.objects.create(name=name,admin=request.user); group.members.add(request.user, *invited)
         return JsonResponse({'group':group_data(group,request.user)},status=201)
     groups=(
         Group.objects.filter(members=request.user)
@@ -662,7 +699,9 @@ def mobile_group_members(request, group_id):
     data=payload(request) or {}; ids=data.get('member_ids',[])
     if not isinstance(ids,list):return JsonResponse({'error':'member_ids must be a list.'},status=400)
     if group.admin_id != request.user.pk:return JsonResponse({'error':'Only a group admin can add members.'},status=403)
-    group.members.add(*User.objects.filter(id__in=ids,is_active=True))
+    invited, error = _resolve_phone_contact_invites(request.user, ids, data.get('contact_numbers', []), group=group)
+    if error:return JsonResponse({'error':error},status=400)
+    group.members.add(*invited)
     return JsonResponse({'group':group_data(group,request.user)})
 
 @csrf_exempt
@@ -717,8 +756,12 @@ def status_data(status, request):
 def status_visible_to(status, viewer):
     if status.user_id == viewer.pk: return True
     profile=Profile.objects.filter(user=status.user).first()
-    privacy=profile.status_privacy if profile else 'everyone'
-    return privacy=='everyone' or (privacy=='followers' and Profile.objects.filter(user=status.user,followed_by__user=viewer).exists())
+    if not profile or profile.status_privacy != 'friends': return False
+    follows_each_other = (
+        Profile.objects.filter(user=status.user, follows__user=viewer).exists()
+        and Profile.objects.filter(user=viewer, follows__user=status.user).exists()
+    )
+    return follows_each_other
 
 @csrf_exempt
 @api_login_required
@@ -810,7 +853,7 @@ def mobile_profile(request, username):
         for field, limit in [('home_address',300),('relationship_status',80),('education_status',300)]:
             if field in data: setattr(profile, field, str(data[field])[:limit])
         if data.get('last_seen_privacy') in {'everyone','followers','nobody'}: profile.last_seen_privacy=data['last_seen_privacy']
-        if data.get('status_privacy') in {'everyone','followers','nobody'}: profile.status_privacy=data['status_privacy']
+        if data.get('status_privacy') in {'friends','nobody'}: profile.status_privacy=data['status_privacy']
         if 'read_receipts' in data: profile.read_receipts=str(data['read_receipts']).lower() in ('1','true','yes')
         avatar = request.FILES.get('avatar')
         cover_image = request.FILES.get('cover_image')
@@ -916,7 +959,9 @@ def mobile_news_shorts(request):
 @api_login_required
 @require_http_methods(['GET'])
 def mobile_courses(request):
-    return JsonResponse({'groups': grouped_catalog()})
+    return JsonResponse({'classes': classes_catalog()})
+
+
 
 # Authenticated video editing endpoints (requires ffmpeg and ffprobe installed).
 import os

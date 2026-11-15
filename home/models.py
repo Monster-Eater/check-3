@@ -4,6 +4,7 @@ from django.db.models.signals import post_save
 from django.urls import reverse
 from . validators import file_size
 from ckeditor.fields import RichTextField
+from decimal import Decimal
 
 
 
@@ -70,6 +71,7 @@ class Meep(models.Model):
 
 class Profile(models.Model):
     PRIVACY_CHOICES = [('everyone', 'Everyone'), ('followers', 'Followers'), ('nobody', 'Nobody')]
+    STATUS_PRIVACY_CHOICES = [('friends', 'Friends only'), ('nobody', 'Nobody')]
     user = models.OneToOneField(User, on_delete=models.CASCADE)
     follows = models.ManyToManyField("self", 
     related_name = "followed_by",
@@ -90,7 +92,7 @@ class Profile(models.Model):
     instagram_link = models.CharField(null=True, blank=True, max_length=200)
     linkdin_link = models.CharField(null=True, blank=True, max_length=200)
     last_seen_privacy = models.CharField(max_length=16, choices=PRIVACY_CHOICES, default='everyone')
-    status_privacy = models.CharField(max_length=16, choices=PRIVACY_CHOICES, default='everyone')
+    status_privacy = models.CharField(max_length=16, choices=STATUS_PRIVACY_CHOICES, default='friends')
     read_receipts = models.BooleanField(default=True)
 
     def __str__(self):
@@ -98,7 +100,6 @@ class Profile(models.Model):
 
 
 
-    
 class Venue(models.Model):
     name = models.CharField('Venue Name', max_length=120)
     address = models.CharField(max_length=100)

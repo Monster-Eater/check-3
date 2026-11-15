@@ -1375,7 +1375,7 @@ class _HomeShellState extends State<HomeShell> {
       FeedScreen(api: widget.api),
       ContactsScreen(api: widget.api, recentOnly: true),
       GroupsScreen(api: widget.api),
-      CoursesScreen(api: widget.api),
+      ClassesScreen(api: widget.api),
     ];
     return Scaffold(
       appBar: AppBar(
@@ -1488,238 +1488,110 @@ class _HomeShellState extends State<HomeShell> {
   }
 }
 
-class CoursesScreen extends StatefulWidget {
-  const CoursesScreen({super.key, required this.api});
-  final CampusApi api;
-  @override
-  State<CoursesScreen> createState() => _CoursesScreenState();
+Future<void> openSchoolSource(BuildContext context, String rawUrl) async {
+  final url = Uri.tryParse(rawUrl);
+  if (url == null || !url.hasScheme) {
+    snack(context, 'Official book or syllabus link is unavailable.');
+    return;
+  }
+  try {
+    final opened = await launchUrl(url, mode: LaunchMode.inAppBrowserView);
+    if (!opened && context.mounted) snack(context, 'Could not open the official source.');
+  } catch (e) {
+    if (context.mounted) snack(context, errorText(e));
+  }
 }
 
-class _CoursesScreenState extends State<CoursesScreen> {
-  List groups = [];
+class ClassesScreen extends StatefulWidget {
+  const ClassesScreen({super.key, required this.api});
+  final CampusApi api;
+  @override State<ClassesScreen> createState() => _ClassesScreenState();
+}
+class _ClassesScreenState extends State<ClassesScreen> {
+  List classes = [];
   bool loading = true;
   String? error;
-
-  @override
-  void initState() {
-    super.initState();
-    loadCourses();
-  }
-
-  Future<void> loadCourses() async {
+  @override void initState() { super.initState(); load(); }
+  Future<void> load() async {
     try {
-      final result = await widget.api.get('/api/mobile/courses/');
-      if (mounted) setState(() { groups = result['groups'] ?? []; loading = false; error = null; });
+      final data = await widget.api.get('/api/mobile/courses/');
+      if (mounted) setState(() { classes = data['classes'] ?? []; loading = false; error = null; });
     } catch (e) {
       if (mounted) setState(() { loading = false; error = '$e'; });
     }
   }
-
-  IconData _groupIcon(String name) {
-    if (name.contains('Computing')) return Icons.computer_outlined;
-    if (name.contains('Engineering')) return Icons.engineering;
-    if (name.contains('Social')) return Icons.groups_outlined;
-    return Icons.psychology;
-  }
-
-  Future<void> _openCourse(Map course) async {
-    await Navigator.of(context).push(MaterialPageRoute<void>(
-      builder: (_) => CourseProgramScreen(course: course),
-    ));
-  }
-
-  @override
-  Widget build(BuildContext context) => RefreshIndicator(
-    onRefresh: loadCourses,
-    child: loading
-        ? const Center(child: CircularProgressIndicator())
-        : error != null
-            ? ListView(
-                children: [
-                  const SizedBox(height: 100),
-                  Center(child: Text(error!)),
-                  Center(child: TextButton(onPressed: loadCourses, child: const Text('Retry'))),
-                ],
-              )
-            : groups.isEmpty
-                ? ListView(
-                    children: const [
-                      SizedBox(height: 100),
-                      Center(child: Text('No courses are available yet.')),
-                    ],
-                  )
-                : ListView(
-                    padding: const EdgeInsets.all(12),
-                    children: [
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(4, 8, 4, 12),
-                        child: Text(
-                          'Browse courses by major class',
-                          style: Theme.of(context).textTheme.titleMedium,
-                        ),
-                      ),
-                      for (var index = 0; index < groups.length; index++)
-                        _CourseGroupCard(
-                          group: groups[index],
-                          icon: _groupIcon((groups[index]['name'] ?? '').toString()),
-                          initiallyExpanded: index == 0,
-                          onCourseTap: _openCourse,
-                        ),
-                    ],
-                  ),
+  @override Widget build(BuildContext context) => RefreshIndicator(
+    onRefresh: load,
+    child: loading ? const Center(child: CircularProgressIndicator()) : error != null
+      ? ListView(children: [const SizedBox(height: 100), Center(child: Text(error!)), Center(child: TextButton(onPressed: load, child: const Text('Retry')))])
+      : ListView(padding: const EdgeInsets.all(12), children: [
+          Card(color: Theme.of(context).colorScheme.primaryContainer, child: const Padding(padding: EdgeInsets.all(16), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text('Federal Classes & Courses', style: TextStyle(fontSize: 19, fontWeight: FontWeight.w800)),
+            SizedBox(height: 6), Text('Choose a class, then open its book list and official syllabus sources.'),
+          ]))),
+          for (final stage in ['Primary (Classes 1–5)', 'Middle (Classes 6–8)', 'Secondary (Classes 9–10)', 'Higher Secondary (Classes 11–12)'])
+            Card(margin: const EdgeInsets.only(bottom: 10), child: ExpansionTile(
+              leading: Icon(stage.startsWith('Primary') ? Icons.child_care : stage.startsWith('Middle') ? Icons.menu_book : stage.startsWith('Secondary') ? Icons.school : Icons.cast_for_education),
+              title: Text(stage, style: const TextStyle(fontWeight: FontWeight.w700)),
+              children: [for (final item in classes.where((c) => c['stage'] == stage)) ListTile(
+                title: Text('${item['name']}'),
+                subtitle: Text('${(item['sections'] as List? ?? []).length} study sections'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => ClassBooksScreen(classData: Map.from(item)))),
+              )],
+            )),
+        ]),
   );
 }
 
-class _CourseGroupCard extends StatelessWidget {
-  const _CourseGroupCard({
-    required this.group,
-    required this.icon,
-    required this.initiallyExpanded,
-    required this.onCourseTap,
-  });
-
-  final dynamic group;
-  final IconData icon;
-  final bool initiallyExpanded;
-  final Future<void> Function(Map course) onCourseTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final courses = List<Map>.from(group['courses'] ?? const []);
-    final name = (group['name'] ?? 'Courses').toString();
-    return Card(
-      margin: const EdgeInsets.only(bottom: 10),
-      clipBehavior: Clip.antiAlias,
-      child: ExpansionTile(
-        initiallyExpanded: initiallyExpanded,
-        leading: CircleAvatar(child: Icon(icon)),
-        title: Text(name, style: const TextStyle(fontWeight: FontWeight.w700)),
-        subtitle: Text('${courses.length} degree programs'),
-        children: [
-          for (final course in courses)
-            ListTile(
-              leading: const Icon(Icons.menu_book_outlined),
-              title: Text((course['name'] ?? 'Course').toString()),
-              subtitle: Text((course['university'] ?? '').toString()),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: () => onCourseTap(course),
-            ),
-        ],
-      ),
-    );
+class ClassBooksScreen extends StatelessWidget {
+  const ClassBooksScreen({super.key, required this.classData});
+  final Map classData;
+  @override Widget build(BuildContext context) {
+    final sections = List<Map>.from(classData['sections'] ?? const []);
+    return Scaffold(appBar: AppBar(title: Text('${classData['name']}')), body: ListView(padding: const EdgeInsets.all(12), children: [
+      for (final section in sections) Card(child: ExpansionTile(
+        initiallyExpanded: sections.length == 1,
+        leading: const Icon(Icons.library_books_outlined),
+        title: Text('${section['name']}', style: const TextStyle(fontWeight: FontWeight.w700)),
+        subtitle: Text('${(section['books'] as List? ?? []).length} books / subjects'),
+        children: [for (final rawBook in (section['books'] as List? ?? const [])) Builder(builder: (context) {
+          final book = Map<String, dynamic>.from(rawBook as Map);
+          return ListTile(
+            leading: const Icon(Icons.menu_book_outlined),
+            title: Text('${book['title']}'),
+            subtitle: Text('${book['nature']} · ${book['publisher']}'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => BookSyllabusScreen(book: book))),
+          );
+        })],
+      )),
+    ]));
   }
 }
 
-class CourseProgramScreen extends StatelessWidget {
-  const CourseProgramScreen({super.key, required this.course});
-  final Map course;
-
-  Future<void> _openSource(BuildContext context, {String? sourceOverride}) async {
-    final override = sourceOverride ?? '';
-    final rawSource = override.isNotEmpty ? override : (course['source'] ?? '').toString();
-    final source = Uri.tryParse(rawSource);
-    if (source == null || !source.hasScheme) {
-      snack(context, 'The official syllabus link is unavailable.');
-      return;
-    }
-    try {
-      final opened = await launchUrl(source, mode: LaunchMode.inAppBrowserView);
-      if (!opened && context.mounted) snack(context, 'Could not open the university syllabus.');
-    } catch (e) {
-      if (context.mounted) snack(context, errorText(e));
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final semesters = List<Map>.from(course['semesters'] ?? const []);
-    return Scaffold(
-      appBar: AppBar(title: Text((course['name'] ?? 'Degree program').toString())),
-      body: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          Text((course['university'] ?? '').toString(),
-              style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700)),
-          const SizedBox(height: 4),
-          Text((course['session'] ?? '').toString(), style: Theme.of(context).textTheme.bodySmall),
-          const SizedBox(height: 14),
-          FilledButton.icon(
-            onPressed: () => _openSource(context),
-            icon: const Icon(Icons.open_in_new),
-            label: const Text('Open official university scheme'),
-          ),
-          const SizedBox(height: 12),
-          if (semesters.isEmpty)
-            const Card(
-              child: Padding(
-                padding: EdgeInsets.all(16),
-                child: Text('The official university scheme is linked above. Open it for the complete semester-wise curriculum.'),
-              ),
-            )
-          else ...[
-            Text('Semester-wise curriculum', style: Theme.of(context).textTheme.titleMedium),
-            const SizedBox(height: 6),
-            for (final semester in semesters)
-              Card(
-                margin: const EdgeInsets.only(bottom: 8),
-                child: ExpansionTile(
-                  initiallyExpanded: (semester['number'] ?? 0) == 1,
-                  title: Text((semester['label'] ?? 'Semester ${semester['number']}').toString()),
-                  subtitle: Text('${(semester['courses'] as List? ?? const []).length} courses'),
-                  children: [
-                    for (final item in (semester['courses'] as List? ?? const []))
-                      Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 8),
-                        child: Card(
-                          child: ExpansionTile(
-                            leading: const Icon(Icons.menu_book_outlined),
-                            title: Text((item['title'] ?? '').toString()),
-                            subtitle: Text([
-                              if ((item['code'] ?? '').toString().isNotEmpty) (item['code'] ?? '').toString(),
-                              if (item['credits'] != null) '${item['credits']} credit hours',
-                            ].join(' · ')),
-                            children: [
-                              if ((item['topics'] as List? ?? const []).isNotEmpty)
-                                for (final topic in (item['topics'] as List? ?? const []))
-                                  ListTile(
-                                    dense: true,
-                                    leading: const Icon(Icons.circle, size: 7),
-                                    title: Text(topic.toString()),
-                                  )
-                              else
-                                Padding(
-                                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-                                  child: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    children: [
-                                      const Text('The university publishes the full topic outline. Open the official course page to view it.'),
-                                      const SizedBox(height: 8),
-                                      TextButton.icon(
-                                        onPressed: () => _openSource(
-                                          context,
-                                          sourceOverride: (item['outline_url'] ?? '').toString(),
-                                        ),
-                                        icon: const Icon(Icons.open_in_new),
-                                        label: const Text('Open official topics'),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                            ],
-                          ),
-                        ),
-                      ),
-                  ],
-                ),
-              ),
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 8),
-              child: Text('Course choices and elective offerings can vary by cohort. Confirm the current scheme with the university.'),
-            ),
-          ],
-        ],
-      ),
-    );
+class BookSyllabusScreen extends StatelessWidget {
+  const BookSyllabusScreen({super.key, required this.book});
+  final Map<String, dynamic> book;
+  @override Widget build(BuildContext context) {
+    final topics = List<String>.from(book['topics'] ?? const []);
+    return Scaffold(appBar: AppBar(title: Text('${book['subject']}', maxLines: 1, overflow: TextOverflow.ellipsis)), body: ListView(padding: const EdgeInsets.all(16), children: [
+      Text('${book['title']}', style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800)),
+      const SizedBox(height: 8),
+      Text('Class ${book['grade']} · ${book['nature']}'),
+      Text('Publisher: ${book['publisher']}'),
+      Text('Medium: ${book['medium']}'),
+      const SizedBox(height: 16),
+      Text('Syllabus and book', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700)),
+      const SizedBox(height: 6),
+      if (topics.isNotEmpty) ...[
+        for (var i = 0; i < topics.length; i++) ListTile(leading: CircleAvatar(radius: 14, child: Text('${i + 1}', style: const TextStyle(fontSize: 12))), title: Text(topics[i])),
+      ] else const Card(child: Padding(padding: EdgeInsets.all(14), child: Text('Open the official source below for this book’s full contents and syllabus. Book files remain hosted by the official education publishers.'))),
+      const SizedBox(height: 12),
+      FilledButton.icon(onPressed: () => openSchoolSource(context, '${book['textbook_url']}'), icon: const Icon(Icons.menu_book), label: const Text('Open official NBF textbook list')),
+      OutlinedButton.icon(onPressed: () => openSchoolSource(context, '${book['syllabus_url']}'), icon: const Icon(Icons.description_outlined), label: const Text('Open official syllabus')),
+      OutlinedButton.icon(onPressed: () => openSchoolSource(context, '${book['scheme_url']}'), icon: const Icon(Icons.account_tree_outlined), label: const Text('Open Federal scheme of studies')),
+    ]));
   }
 }
 
@@ -2639,6 +2511,63 @@ class _ContactsScreenState extends State<ContactsScreen> {
 String _contactPhoneKey(String value) {
   final digits = value.replaceAll(RegExp(r'[^0-9]'), '');
   return digits.startsWith('00') ? digits.substring(2) : digits;
+}
+
+class PhoneInviteContacts {
+  const PhoneInviteContacts(this.people, this.numbers);
+  final List<Map<String, dynamic>> people;
+  final List<String> numbers;
+}
+
+Future<PhoneInviteContacts> loadPhoneInviteContacts(
+  BuildContext context,
+  CampusApi api,
+) async {
+  if (kIsWeb) throw Exception('Saved phone contacts are available in the Android or iOS app.');
+  final consent = await showDialog<bool>(
+    context: context,
+    builder: (dialogContext) => AlertDialog(
+      title: const Text('Choose from your phone contacts'),
+      content: const Text('Campus Times will send contact numbers securely for a one-time match. Your address book is not saved. Only accounts whose owners enabled phone discovery can be added.'),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
+        FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Continue')),
+      ],
+    ),
+  );
+  if (consent != true) return const PhoneInviteContacts([], []);
+  final permission = await FlutterContacts.permissions.request(PermissionType.read);
+  if (permission != PermissionStatus.granted) {
+    throw Exception('Allow contact access to choose group members from your phone.');
+  }
+  final keys = <String>{};
+  final allNumbers = <String>{};
+  for (final contact in await FlutterContacts.getAll(properties: {ContactProperty.phone})) {
+    for (final phone in contact.phones) {
+      final number = phone.normalizedNumber?.trim().isNotEmpty == true
+          ? phone.normalizedNumber!.trim()
+          : phone.number.trim();
+      final key = _contactPhoneKey(number);
+      if (key.length >= 7) {
+        keys.add(key);
+        allNumbers.add(number);
+      }
+    }
+  }
+  final matches = <int, Map<String, dynamic>>{};
+  final list = keys.toList();
+  for (var start = 0; start < list.length; start += 500) {
+    final end = start + 500 < list.length ? start + 500 : list.length;
+    final result = await api.post('/api/mobile/contact-matches/', {'numbers': list.sublist(start, end)});
+    for (final match in (result['matches'] as List? ?? const [])) {
+      final person = match['person'];
+      if (person is Map && person['id'] is int) {
+        matches[person['id'] as int] = Map<String, dynamic>.from(person);
+      }
+    }
+  }
+  final people = matches.values.toList()..sort((a, b) => '${a['username']}'.toLowerCase().compareTo('${b['username']}'.toLowerCase()));
+  return PhoneInviteContacts(people, allNumbers.toList());
 }
 
 class PhoneContactsScreen extends StatefulWidget {
@@ -3574,20 +3503,22 @@ class CreateGroupDialog extends StatefulWidget {
 class _CreateGroupDialogState extends State<CreateGroupDialog> {
   final name = TextEditingController();
   List people = [];
+  List<String> contactNumbers = [];
   final selected = <int>{};
   bool loading = true, busy = false;
   @override
   void initState() {
     super.initState();
-    widget.api
-        .get('/api/mobile/contacts/')
-        .then((d) {
-          if (mounted) setState(() => people = d['people'] ?? []);
-        })
-        .catchError((_) {})
-        .whenComplete(() {
-          if (mounted) setState(() => loading = false);
-        });
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      try {
+        final contacts = await loadPhoneInviteContacts(context, widget.api);
+        if (mounted) setState(() { people = contacts.people; contactNumbers = contacts.numbers; });
+      } catch (e) {
+        if (mounted) snack(context, errorText(e));
+      } finally {
+        if (mounted) setState(() => loading = false);
+      }
+    });
   }
 
   Future<void> save() async {
@@ -3597,6 +3528,7 @@ class _CreateGroupDialogState extends State<CreateGroupDialog> {
       await widget.api.post('/api/mobile/groups/', {
         'name': name.text.trim(),
         'member_ids': selected.toList(),
+        'contact_numbers': contactNumbers,
       });
       if (mounted) Navigator.pop(context, true);
     } catch (e) {
@@ -3627,14 +3559,16 @@ class _CreateGroupDialogState extends State<CreateGroupDialog> {
           const SizedBox(height: 12),
           const Align(
             alignment: Alignment.centerLeft,
-            child: Text('Add members'),
+            child: Text('Add people saved in your phone contacts'),
           ),
           SizedBox(
             height: 230,
             child: loading
                 ? const Center(child: CircularProgressIndicator())
                 : ListView(
-                    children: people
+                    children: people.isEmpty
+                        ? [const Padding(padding: EdgeInsets.all(16), child: Text('No eligible contacts found. They need an account and must enable phone discovery.'))]
+                        : people
                         .map(
                           (p) => CheckboxListTile(
                             value: selected.contains(p['id']),
@@ -4012,9 +3946,15 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
 
   Future<void> addMembers() async {
     final current = members.map((m) => m['id']).toSet();
-    final people = await widget.api.get('/api/mobile/contacts/');
+    late final PhoneInviteContacts phoneContacts;
+    try {
+      phoneContacts = await loadPhoneInviteContacts(context, widget.api);
+    } catch (e) {
+      if (mounted) snack(context, errorText(e));
+      return;
+    }
     if (!mounted) return;
-    final candidates = (people['people'] as List)
+    final candidates = phoneContacts.people
         .where((p) => !current.contains(p['id']))
         .toList();
     final selected = <int>{};
@@ -4027,7 +3967,9 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
             width: 380,
             height: 300,
             child: ListView(
-              children: candidates
+            children: candidates.isEmpty
+                ? [const Padding(padding: EdgeInsets.all(16), child: Text('No eligible saved contacts are available to add.'))]
+                : candidates
                   .map(
                     (p) => CheckboxListTile(
                       value: selected.contains(p['id']),
@@ -4061,7 +4003,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       try {
         await widget.api.post(
           '/api/mobile/groups/${widget.group['id']}/members/',
-          {'member_ids': selected.toList()},
+          {'member_ids': selected.toList(), 'contact_numbers': phoneContacts.numbers},
         );
         await load();
       } catch (e) {
@@ -4558,12 +4500,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
   Future<void> editPrivacy() async {
     String lastSeen=(profile['last_seen_privacy']??'everyone').toString();
-    String status=(profile['status_privacy']??'everyone').toString();
+    String status=(profile['status_privacy']??'friends').toString();
     bool receipts=profile['read_receipts']!=false;
     bool phoneDiscoverable=profile['phone_discoverable']==true;
     final result=await showDialog<Map<String,dynamic>>(context:context,builder:(ctx)=>StatefulBuilder(builder:(ctx,setDialog)=>AlertDialog(title:const Text('Privacy settings'),content:Column(mainAxisSize:MainAxisSize.min,children:[
       DropdownButtonFormField<String>(value:lastSeen,decoration:const InputDecoration(labelText:'Last seen'),items:const [DropdownMenuItem(value:'everyone',child:Text('Everyone')),DropdownMenuItem(value:'followers',child:Text('Followers')),DropdownMenuItem(value:'nobody',child:Text('Nobody'))],onChanged:(v){if(v!=null)setDialog(()=>lastSeen=v);}),
-      DropdownButtonFormField<String>(value:status,decoration:const InputDecoration(labelText:'Status privacy'),items:const [DropdownMenuItem(value:'everyone',child:Text('Everyone')),DropdownMenuItem(value:'followers',child:Text('Followers')),DropdownMenuItem(value:'nobody',child:Text('Nobody'))],onChanged:(v){if(v!=null)setDialog(()=>status=v);}),
+      DropdownButtonFormField<String>(value:status,decoration:const InputDecoration(labelText:'Who can see your status'),items:const [DropdownMenuItem(value:'friends',child:Text('Friends only')),DropdownMenuItem(value:'nobody',child:Text('Nobody'))],onChanged:(v){if(v!=null)setDialog(()=>status=v);}),
       SwitchListTile(contentPadding:EdgeInsets.zero,title:const Text('Read receipts'),value:receipts,onChanged:(v)=>setDialog(()=>receipts=v)),
       SwitchListTile(contentPadding:EdgeInsets.zero,title:const Text('Let phone contacts find me'),subtitle:const Text('Requires a phone number in your profile.'),value:phoneDiscoverable,onChanged:(v)=>setDialog(()=>phoneDiscoverable=v)),
     ]),actions:[TextButton(onPressed:()=>Navigator.pop(ctx),child:const Text('Cancel')),FilledButton(onPressed:()=>Navigator.pop(ctx,{'last_seen_privacy':lastSeen,'status_privacy':status,'read_receipts':receipts,'phone_discoverable':phoneDiscoverable}),child:const Text('Save'))])));
