@@ -1,12 +1,17 @@
 databases:
-  - name: campus-times-db
+  - name: campus-times-copy-db
     plan: free
-    databaseName: campus_times
-    user: campus_times
+    databaseName: campus_times_copy
+    user: campus_times_copy
 
 services:
+  - type: keyvalue
+    name: campus-times-copy-redis
+    plan: free
+    maxmemoryPolicy: allkeys-lru
+
   - type: web
-    name: campus-times-backend
+    name: campus-times-copy-backend
     runtime: python
     plan: free
     buildCommand: ./build.sh
@@ -15,7 +20,12 @@ services:
     envVars:
       - key: DATABASE_URL
         fromDatabase:
-          name: campus-times-db
+          name: campus-times-copy-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: campus-times-copy-redis
           property: connectionString
       - key: DJANGO_SECRET_KEY
         generateValue: true
@@ -25,3 +35,9 @@ services:
         value: ".onrender.com"
       - key: DJANGO_CSRF_TRUSTED_ORIGINS
         value: "https://*.onrender.com"
+      - key: CLOUDINARY_CLOUD_NAME
+        sync: false
+      - key: CLOUDINARY_API_KEY
+        sync: false
+      - key: CLOUDINARY_API_SECRET
+        sync: false
